@@ -1,4 +1,4 @@
-// deploy_kangaroos.cpp
+
 
 #include "deploy_kangaroos.h"
 #include <iostream>
@@ -11,16 +11,17 @@
 #include <atomic>
 #include <chrono>
 #include <random>
-#include "secp256k1/SECP256k1.h"
+#include <vector>
+#include "secp256k1/SECP256K1.h"
 #include "secp256k1/Point.h"
 #include "secp256k1/Int.h"
 
 static std::atomic<uint64_t> kangaroo_counter{0};
 
 // Function prototype for the CUDA collision detection function
-extern "C" void detect_collision(const char* dp1, const char* dp2, int length);
+extern "C" void detect_collision_batch(const uint8_t* dp1_batch, const uint8_t* dp2_batch, int length, int batch_size);
 
-// Converts a hexadecimal string to a binary string representation
+// Helper function to convert hexadecimal string to binary representation
 std::string hexToBinary(const std::string& hex) {
     std::string binary;
     for (char c : hex) {
@@ -47,7 +48,7 @@ std::string hexToBinary(const std::string& hex) {
     return binary;
 }
 
-// Updates the Kangaroo Counter displayed on the terminal
+// Function to update the Kangaroo Counter displayed on the terminal
 void updateKangarooCounter(double power_of_two) {
     struct winsize w;
     ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
@@ -65,9 +66,21 @@ void updateKangarooCounter(double power_of_two) {
     std::cout << counter_message.str() << std::flush;
 }
 
+// Helper function to convert binary string to byte vector
+std::vector<uint8_t> binaryStringToBytes(const std::string& binary_str) {
+    std::vector<uint8_t> bytes((binary_str.size() + 7) / 8, 0);
+    for (size_t i = 0; i < binary_str.size(); ++i) {
+        if (binary_str[i] == '1') {
+            bytes[i / 8] |= (1 << (7 - (i % 8)));
+        }
+    }
+    return bytes;
+}
+
 // Main function to deploy kangaroos for collision detection
 void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
-    std::string dp1, dp2;
+    std::vector<std::vector<uint8_t>> dp1_batch;
+    std::vector<std::vector<uint8_t>> dp2_batch;
     static std::chrono::time_point<std::chrono::steady_clock> last_update_time = std::chrono::steady_clock::now();
 
     Secp256K1 secp;
@@ -79,42 +92,33 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
 
     for (const auto& base_key : kangaroo_batch) {
         Int current_key = base_key;
-
-        // Make a non-const copy of base_key
         Int temp_base_key = base_key;
 
-        // Print the base_key in binary if it has exactly 20 trailing zeros and a length of 136
+        // Collect dp1 data based on original constraints
         {
             std::string hex_str = temp_base_key.GetBase16();
             std::string binary_str = hexToBinary(hex_str);
             if (binary_str.length() == 136 && binary_str.substr(binary_str.size() - 20) == "00000000000000000000") {
-                dp1 = binary_str;
-
-                // Check if dp2 is not empty before calling detect_collision
-                if (!dp2.empty()) {
-                    detect_collision(dp1.c_str(), dp2.c_str(), dp1.length());
-                }
+                auto bytes = binaryStringToBytes(binary_str);
+                dp1_batch.push_back(bytes);
             }
         }
 
         const int KANGAROO_JUMPS = 2048;
         for (int jump = 0; jump < KANGAROO_JUMPS; ++jump) {
-            // Generate a 135-bit random value using multiple parts to ensure full precision
             Int jump_value;
-            jump_value.SetInt64(fixed_value);               // Set the initial 64-bit part
-            jump_value.ShiftL(64);                          // Shift left by 64 bits
+            jump_value.SetInt64(fixed_value);
+            jump_value.ShiftL(64);
             Int temp;
-            temp.SetInt64(fixed_value);                     // Generate another random 64-bit value
-            jump_value.Add(&temp);                          // Add to the jump_value
-            jump_value.ShiftL(7);                           // Shift left by 7 more bits to target 135-bit size
-            temp.SetInt64(fixed_value & ((1ULL << 7) - 1)); // Limit to the remaining 7 bits
-            jump_value.Add(&temp);                          // Complete the 135-bit jump value
+            temp.SetInt64(fixed_value);
+            jump_value.Add(&temp);
+            jump_value.ShiftL(7);
+            temp.SetInt64(fixed_value & ((1ULL << 7) - 1));
+            jump_value.Add(&temp);
 
-            // Update current_key based on the jump_value added to the base_key
             current_key.Add(&jump_value);
 
             Point current_pubkey = secp.ComputePublicKey(&current_key);
-
             if (current_pubkey.equals(target_key)) {
                 std::cout << "\n[+] Target Key Found: " << current_key.GetBase16() << std::endl;
                 return;
@@ -122,21 +126,46 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
 
             ++kangaroo_counter;
 
-            // Print the current_key in binary if it has exactly 20 trailing zeros and a length of 136
+            // Collect dp2 data based on original constraints
             {
                 std::string hex_str = current_key.GetBase16();
                 std::string binary_str = hexToBinary(hex_str);
                 if (binary_str.length() == 136 && binary_str.substr(binary_str.size() - 34) == "0000000000000000000000000000000000") {
-                    dp2 = binary_str;
-
-                    // Check if dp1 is not empty before calling detect_collision
-                    if (!dp1.empty()) {
-                        detect_collision(dp1.c_str(), dp2.c_str(), dp2.length());
-                    }
+                    auto bytes = binaryStringToBytes(binary_str);
+                    dp2_batch.push_back(bytes);
                 }
             }
         }
 
+        // Batch processing when batch size reaches a threshold
+        const int BATCH_THRESHOLD = 100; // Adjust as needed
+        if (dp1_batch.size() >= BATCH_THRESHOLD && dp2_batch.size() >= BATCH_THRESHOLD) {
+            // Ensure both batches have the same size
+            size_t min_batch_size = std::min(dp1_batch.size(), dp2_batch.size());
+            dp1_batch.resize(min_batch_size);
+            dp2_batch.resize(min_batch_size);
+
+            // Flatten the batches for GPU processing
+            int length = dp1_batch[0].size();
+            int batch_size = dp1_batch.size();
+
+            std::vector<uint8_t> flat_dp1(batch_size * length);
+            std::vector<uint8_t> flat_dp2(batch_size * length);
+
+            for (int i = 0; i < batch_size; ++i) {
+                std::copy(dp1_batch[i].begin(), dp1_batch[i].end(), flat_dp1.begin() + i * length);
+                std::copy(dp2_batch[i].begin(), dp2_batch[i].end(), flat_dp2.begin() + i * length);
+            }
+
+            // Call the CUDA function
+            detect_collision_batch(flat_dp1.data(), flat_dp2.data(), length, batch_size);
+
+            // Clear batches
+            dp1_batch.clear();
+            dp2_batch.clear();
+        }
+
+        // Update Kangaroo Counter periodically
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - last_update_time).count() >= 2) {
             last_update_time = now;
