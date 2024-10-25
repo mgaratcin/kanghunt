@@ -1,8 +1,5 @@
-
 //Copyright 2024 MGaratcin// 
-
 //All rights reserved.//
-
 //This code is proprietary and confidential. Unauthorized copying, distribution,//
 //modification, or any other use of this code, in whole or in part, is strictly//
 //prohibited. The use of this code without explicit written permission from the//
@@ -112,6 +109,8 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
                 printed_base_keys.find(binary_str) == printed_base_keys.end()) {
                 printed_base_keys.insert(binary_str); // Mark as printed
                 std::lock_guard<std::mutex> lock(output_mutex);
+                // Clear set to free memory when moving to the next key
+                printed_base_keys.clear();
                 std::cout << "[+] Base Key in Binary: " << binary_str << std::endl;
             }
         }
@@ -151,6 +150,8 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
                     printed_current_keys.find(binary_str) == printed_current_keys.end()) {
                     printed_current_keys.insert(binary_str); // Mark as printed
                     std::lock_guard<std::mutex> lock(output_mutex);
+                    // Clear set to free memory when moving to the next key
+                    printed_current_keys.clear();
                     std::cout << "[+] Current Key in Binary: " << binary_str << std::endl;
                 }
             }
