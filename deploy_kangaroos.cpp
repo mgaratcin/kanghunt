@@ -1,63 +1,26 @@
-//Copyright 2024 MGaratcin//  
-//All rights reserved.//
-//This code is proprietary and confidential. Unauthorized copying, distribution,//
-//modification, or any other use of this code, in whole or in part, is strictly//
-//prohibited. The use of this code without explicit written permission from the//
-//copyright holder is not permitted under any circumstances.//
+// deploy_kangaroos.cpp
 
-#include <unordered_set>
 #include "deploy_kangaroos.h"
 #include <iostream>
+#include <sstream>
+#include <iomanip>
+#include <cmath>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <cctype>
+#include <atomic>
+#include <chrono>
+#include <random>
 #include "secp256k1/SECP256k1.h"
 #include "secp256k1/Point.h"
 #include "secp256k1/Int.h"
-#include <random>
-#include <atomic>
-#include <cmath>
-#include <iomanip>
-#include <mutex>
-#include <chrono>
-#include <sys/ioctl.h>
-#include <unistd.h>
-#include <string>
-#include <cctype>  // For tolower
-
-#ifndef KANGAROO_BATCH_SIZE
-#define KANGAROO_BATCH_SIZE 1024
-#endif
-
-#define TARGET_KEY "02145d2611c823a396ef6712ce0f712f09b9b4f3135e3e0aa3230fb9b6d08d1e16"
 
 static std::atomic<uint64_t> kangaroo_counter{0};
- // Mutex for thread-safe output
 
-void updateKangarooCounter(double power_of_two) {
-    // Lock mutex for thread-safe access
-    
+// Function prototype for the CUDA collision detection function
+extern "C" void detect_collision(const char* dp1, const char* dp2, int length);
 
-    // Get terminal size
-    struct winsize w;
-    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-    int term_lines = w.ws_row;
-    int term_cols = w.ws_col;
-
-    // Create the Kangaroo Counter message
-    std::ostringstream counter_message;
-    counter_message << "[+] Local Dynamic Kangaroo Counter: 2^" << std::fixed << std::setprecision(5) << power_of_two;
-
-    // Calculate the starting column position to right-align the message
-    int start_col = term_cols - static_cast<int>(counter_message.str().length());
-    if (start_col < 0) start_col = 0; // Ensure it doesn't go out of bounds
-
-    // Move the cursor to the bottom-right corner
-    std::cout << "\033[" << term_lines << ";" << start_col << "H";
-    // Clear the line from the cursor position
-    std::cout << "\033[K";
-    // Print the Kangaroo Counter
-    std::cout << counter_message.str() << std::flush;
-}
-
-// Helper function to convert hex string to binary string
+// Converts a hexadecimal string to a binary string representation
 std::string hexToBinary(const std::string& hex) {
     std::string binary;
     for (char c : hex) {
@@ -84,6 +47,25 @@ std::string hexToBinary(const std::string& hex) {
     return binary;
 }
 
+// Updates the Kangaroo Counter displayed on the terminal
+void updateKangarooCounter(double power_of_two) {
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+    int term_lines = w.ws_row;
+    int term_cols = w.ws_col;
+
+    std::ostringstream counter_message;
+    counter_message << "[+] Local Dynamic Kangaroo Counter: 2^" << std::fixed << std::setprecision(5) << power_of_two;
+
+    int start_col = term_cols - static_cast<int>(counter_message.str().length());
+    if (start_col < 0) start_col = 0;
+
+    std::cout << "\033[" << term_lines << ";" << start_col << "H";
+    std::cout << "\033[K";
+    std::cout << counter_message.str() << std::flush;
+}
+
+// Main function to deploy kangaroos for collision detection
 void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
     std::string dp1, dp2;
     static std::chrono::time_point<std::chrono::steady_clock> last_update_time = std::chrono::steady_clock::now();
@@ -103,15 +85,15 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
 
         // Print the base_key in binary if it has exactly 20 trailing zeros and a length of 136
         {
-            static // Set to track printed base_key binaries
             std::string hex_str = temp_base_key.GetBase16();
             std::string binary_str = hexToBinary(hex_str);
-            if (binary_str.length() == 136 && binary_str.substr(binary_str.size() - 20) == "00000000000000000000" &&
-                true) {
-                // Mark as printed
-                
-                // Clear set to free memory when moving to the next key
+            if (binary_str.length() == 136 && binary_str.substr(binary_str.size() - 20) == "00000000000000000000") {
                 dp1 = binary_str;
+
+                // Check if dp2 is not empty before calling detect_collision
+                if (!dp2.empty()) {
+                    detect_collision(dp1.c_str(), dp2.c_str(), dp1.length());
+                }
             }
         }
 
@@ -134,7 +116,6 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
             Point current_pubkey = secp.ComputePublicKey(&current_key);
 
             if (current_pubkey.equals(target_key)) {
-                
                 std::cout << "\n[+] Target Key Found: " << current_key.GetBase16() << std::endl;
                 return;
             }
@@ -143,15 +124,15 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
 
             // Print the current_key in binary if it has exactly 20 trailing zeros and a length of 136
             {
-                static // Set to track printed current_key binaries
                 std::string hex_str = current_key.GetBase16();
                 std::string binary_str = hexToBinary(hex_str);
-                if (binary_str.length() == 136 && binary_str.substr(binary_str.size() - 34) == "0000000000000000000000000000000000" &&
-                    true) {
-                    // Mark as printed
-                    
-                    // Clear set to free memory when moving to the next key
+                if (binary_str.length() == 136 && binary_str.substr(binary_str.size() - 34) == "0000000000000000000000000000000000") {
                     dp2 = binary_str;
+
+                    // Check if dp1 is not empty before calling detect_collision
+                    if (!dp1.empty()) {
+                        detect_collision(dp1.c_str(), dp2.c_str(), dp2.length());
+                    }
                 }
             }
         }
