@@ -29,11 +29,11 @@
 #define TARGET_KEY "02145d2611c823a396ef6712ce0f712f09b9b4f3135e3e0aa3230fb9b6d08d1e16"
 
 static std::atomic<uint64_t> kangaroo_counter{0};
-static std::mutex output_mutex; // Mutex for thread-safe output
+ // Mutex for thread-safe output
 
 void updateKangarooCounter(double power_of_two) {
     // Lock mutex for thread-safe access
-    std::lock_guard<std::mutex> lock(output_mutex);
+    
 
     // Get terminal size
     struct winsize w;
@@ -85,6 +85,7 @@ std::string hexToBinary(const std::string& hex) {
 }
 
 void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
+    std::string dp1, dp2;
     static std::chrono::time_point<std::chrono::steady_clock> last_update_time = std::chrono::steady_clock::now();
 
     Secp256K1 secp;
@@ -102,16 +103,15 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
 
         // Print the base_key in binary if it has exactly 20 trailing zeros and a length of 136
         {
-            static std::unordered_set<std::string> printed_base_keys; // Set to track printed base_key binaries
+            static // Set to track printed base_key binaries
             std::string hex_str = temp_base_key.GetBase16();
             std::string binary_str = hexToBinary(hex_str);
             if (binary_str.length() == 136 && binary_str.substr(binary_str.size() - 20) == "00000000000000000000" &&
-                printed_base_keys.find(binary_str) == printed_base_keys.end()) {
-                printed_base_keys.insert(binary_str); // Mark as printed
-                std::lock_guard<std::mutex> lock(output_mutex);
+                true) {
+                // Mark as printed
+                
                 // Clear set to free memory when moving to the next key
-                printed_base_keys.clear();
-                std::cout << "[+] Base Key in Binary: " << binary_str << std::endl;
+                dp1 = binary_str;
             }
         }
 
@@ -134,7 +134,7 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
             Point current_pubkey = secp.ComputePublicKey(&current_key);
 
             if (current_pubkey.equals(target_key)) {
-                std::lock_guard<std::mutex> lock(output_mutex);
+                
                 std::cout << "\n[+] Target Key Found: " << current_key.GetBase16() << std::endl;
                 return;
             }
@@ -143,16 +143,15 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
 
             // Print the current_key in binary if it has exactly 20 trailing zeros and a length of 136
             {
-                static std::unordered_set<std::string> printed_current_keys; // Set to track printed current_key binaries
+                static // Set to track printed current_key binaries
                 std::string hex_str = current_key.GetBase16();
                 std::string binary_str = hexToBinary(hex_str);
                 if (binary_str.length() == 136 && binary_str.substr(binary_str.size() - 34) == "0000000000000000000000000000000000" &&
-                    printed_current_keys.find(binary_str) == printed_current_keys.end()) {
-                    printed_current_keys.insert(binary_str); // Mark as printed
-                    std::lock_guard<std::mutex> lock(output_mutex);
+                    true) {
+                    // Mark as printed
+                    
                     // Clear set to free memory when moving to the next key
-                    printed_current_keys.clear();
-                    std::cout << "[+] Current Key in Binary: " << binary_str << std::endl;
+                    dp2 = binary_str;
                 }
             }
         }
