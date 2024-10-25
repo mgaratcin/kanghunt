@@ -104,7 +104,7 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
             }
         }
 
-        const int KANGAROO_JUMPS = 2048;
+        const int KANGAROO_JUMPS = 250;
         for (int jump = 0; jump < KANGAROO_JUMPS; ++jump) {
             Int jump_value;
             jump_value.SetInt64(fixed_value);
@@ -138,7 +138,7 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
         }
 
         // Batch processing when batch size reaches a threshold
-        const int BATCH_THRESHOLD = 100; // Adjust as needed
+        const int BATCH_THRESHOLD = 50; // Adjust as needed
         if (dp1_batch.size() >= BATCH_THRESHOLD && dp2_batch.size() >= BATCH_THRESHOLD) {
             // Ensure both batches have the same size
             size_t min_batch_size = std::min(dp1_batch.size(), dp2_batch.size());
