@@ -1,4 +1,3 @@
-#include "deploy_kangaroos.cpp"
 #include "deploy_kangaroos.h"
 #include <vector>
 #include <cstdio>
