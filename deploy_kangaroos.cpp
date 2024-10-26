@@ -21,6 +21,8 @@
 #include "secp256k1/Point.h"
 #include "secp256k1/Int.h"
 
+#define TARGET_KEY "02145d2611c823a396ef6712ce0f712f09b9b4f3135e3e0aa3230fb9b6d08d1e16"
+
 static std::atomic<uint64_t> kangaroo_counter{0};
 
 // Function prototype for the CUDA collision detection function
