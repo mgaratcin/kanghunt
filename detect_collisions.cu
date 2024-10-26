@@ -1,4 +1,4 @@
-// Copyright 2024 MGaratcin
+// Copyright 2024 MGaratcin 
 
 // All rights reserved.
 // This code is proprietary and c
