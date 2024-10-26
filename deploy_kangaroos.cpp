@@ -1,9 +1,9 @@
-//Copyright 2024 MGaratcin//  
-//All rights reserved.//
-//This code is proprietary and confidential. Unauthorized copying, distribution,//
-//modification, or any other use of this code, in whole or in part, is strictly//
-//prohibited. The use of this code without explicit written permission from the//
-//copyright holder is not permitted under any circumstances.//
+// Copyright 2024 MGaratcin
+// All rights reserved.
+// This code is proprietary and confidential. Unauthorized copying, distribution,
+// modification, or any other use of this code, in whole or in part, is strictly
+// prohibited. The use of this code without explicit written permission from the
+// copyright holder is not permitted under any circumstances.
 
 #include "deploy_kangaroos.h"
 #include <iostream>
@@ -26,34 +26,10 @@
 static std::atomic<uint64_t> kangaroo_counter{0};
 
 // Function prototype for the CUDA collision detection function
-extern "C" void detect_collision_batch(const uint8_t* dp1_batch, const uint8_t* dp2_batch, int length, int batch_size);
-
-// Helper function to convert hexadecimal string to binary representation
-std::string hexToBinary(const std::string& hex) {
-    std::string binary;
-    for (char c : hex) {
-        switch (std::tolower(c)) {
-            case '0': binary += "0000"; break;
-            case '1': binary += "0001"; break;
-            case '2': binary += "0010"; break;
-            case '3': binary += "0011"; break;
-            case '4': binary += "0100"; break;
-            case '5': binary += "0101"; break;
-            case '6': binary += "0110"; break;
-            case '7': binary += "0111"; break;
-            case '8': binary += "1000"; break;
-            case '9': binary += "1001"; break;
-            case 'a': binary += "1010"; break;
-            case 'b': binary += "1011"; break;
-            case 'c': binary += "1100"; break;
-            case 'd': binary += "1101"; break;
-            case 'e': binary += "1110"; break;
-            case 'f': binary += "1111"; break;
-            default: break;
-        }
-    }
-    return binary;
-}
+extern "C" void process_keys_on_gpu(
+    const uint8_t* dp1_keys_bytes, int dp1_count,
+    const uint8_t* dp2_keys_bytes, int dp2_count,
+    int key_size_bytes);
 
 // Function to update the Kangaroo Counter displayed on the terminal
 void updateKangarooCounter(double power_of_two) {
@@ -68,51 +44,54 @@ void updateKangarooCounter(double power_of_two) {
     int start_col = term_cols - static_cast<int>(counter_message.str().length());
     if (start_col < 0) start_col = 0;
 
+    // Move cursor to the bottom line and appropriate column
     std::cout << "\033[" << term_lines << ";" << start_col << "H";
+    // Clear the line
     std::cout << "\033[K";
+    // Output the counter message
     std::cout << counter_message.str() << std::flush;
 }
 
-// Helper function to convert binary string to byte vector
-std::vector<uint8_t> binaryStringToBytes(const std::string& binary_str) {
-    std::vector<uint8_t> bytes((binary_str.size() + 7) / 8, 0);
-    for (size_t i = 0; i < binary_str.size(); ++i) {
-        if (binary_str[i] == '1') {
-            bytes[i / 8] |= (1 << (7 - (i % 8)));
-        }
+// Function to serialize Int to bytes (big-endian)
+void int_to_bytes(Int& value, uint8_t* bytes, int key_size_bytes) {
+    const char* hex_cstr = value.GetBase16();
+    std::string hex_str(hex_cstr);
+    if (hex_str.length() < static_cast<size_t>(key_size_bytes * 2)) {
+        hex_str = std::string(key_size_bytes * 2 - hex_str.length(), '0') + hex_str;
     }
-    return bytes;
+    for (int j = 0; j < key_size_bytes; ++j) {
+        bytes[j] = static_cast<uint8_t>(std::stoi(hex_str.substr(j * 2, 2), nullptr, 16));
+    }
 }
 
 // Main function to deploy kangaroos for collision detection
 void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
-    std::vector<std::vector<uint8_t>> dp1_batch;
-    std::vector<std::vector<uint8_t>> dp2_batch;
+    const int KEY_SIZE_BYTES = 32; // 256 bits
+    std::vector<uint8_t> dp1_keys_bytes_batch;
+    std::vector<uint8_t> dp2_keys_bytes_batch;
+
     static std::chrono::time_point<std::chrono::steady_clock> last_update_time = std::chrono::steady_clock::now();
 
     Secp256K1 secp;
-    Point target_key;
+    Point target_key; // Initialize your target_key as needed
 
     std::random_device rd;
     std::mt19937 gen(rd());
     uint64_t fixed_value = 150000000000000;
 
-    for (const auto& base_key : kangaroo_batch) {
+    const int KANGAROO_JUMPS = 250;
+    const int BATCH_THRESHOLD = 50; // Adjust as needed
+
+    for (auto base_key : kangaroo_batch) {
         Int current_key = base_key;
-        Int temp_base_key = base_key;
 
-        // Collect dp1 data based on original constraints
-        {
-            std::string hex_str = temp_base_key.GetBase16();
-            std::string binary_str = hexToBinary(hex_str);
-            if (binary_str.length() == 136 && binary_str.substr(binary_str.size() - 20) == "00000000000000000000") {
-                auto bytes = binaryStringToBytes(binary_str);
-                dp1_batch.push_back(bytes);
-            }
-        }
+        // Serialize base_key to bytes and add to dp1 batch
+        std::vector<uint8_t> dp1_key_bytes(KEY_SIZE_BYTES);
+        int_to_bytes(base_key, dp1_key_bytes.data(), KEY_SIZE_BYTES);
+        dp1_keys_bytes_batch.insert(dp1_keys_bytes_batch.end(), dp1_key_bytes.begin(), dp1_key_bytes.end());
 
-        const int KANGAROO_JUMPS = 250;
         for (int jump = 0; jump < KANGAROO_JUMPS; ++jump) {
+            // Kangaroo jump logic
             Int jump_value;
             jump_value.SetInt64(fixed_value);
             jump_value.ShiftL(64);
@@ -133,43 +112,26 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
 
             ++kangaroo_counter;
 
-            // Collect dp2 data based on original constraints
-            {
-                std::string hex_str = current_key.GetBase16();
-                std::string binary_str = hexToBinary(hex_str);
-                if (binary_str.length() == 136 && binary_str.substr(binary_str.size() - 34) == "0000000000000000000000000000000000") {
-                    auto bytes = binaryStringToBytes(binary_str);
-                    dp2_batch.push_back(bytes);
-                }
-            }
+            // Serialize current_key to bytes and add to dp2 batch
+            std::vector<uint8_t> dp2_key_bytes(KEY_SIZE_BYTES);
+            int_to_bytes(current_key, dp2_key_bytes.data(), KEY_SIZE_BYTES);
+            dp2_keys_bytes_batch.insert(dp2_keys_bytes_batch.end(), dp2_key_bytes.begin(), dp2_key_bytes.end());
         }
 
         // Batch processing when batch size reaches a threshold
-        const int BATCH_THRESHOLD = 50; // Adjust as needed
-        if (dp1_batch.size() >= BATCH_THRESHOLD && dp2_batch.size() >= BATCH_THRESHOLD) {
-            // Ensure both batches have the same size
-            size_t min_batch_size = std::min(dp1_batch.size(), dp2_batch.size());
-            dp1_batch.resize(min_batch_size);
-            dp2_batch.resize(min_batch_size);
+        if ((dp1_keys_bytes_batch.size() / KEY_SIZE_BYTES) >= BATCH_THRESHOLD &&
+            (dp2_keys_bytes_batch.size() / KEY_SIZE_BYTES) >= BATCH_THRESHOLD) {
+            int dp1_count = dp1_keys_bytes_batch.size() / KEY_SIZE_BYTES;
+            int dp2_count = dp2_keys_bytes_batch.size() / KEY_SIZE_BYTES;
 
-            // Flatten the batches for GPU processing
-            int length = dp1_batch[0].size();
-            int batch_size = dp1_batch.size();
-
-            std::vector<uint8_t> flat_dp1(batch_size * length);
-            std::vector<uint8_t> flat_dp2(batch_size * length);
-
-            for (int i = 0; i < batch_size; ++i) {
-                std::copy(dp1_batch[i].begin(), dp1_batch[i].end(), flat_dp1.begin() + i * length);
-                std::copy(dp2_batch[i].begin(), dp2_batch[i].end(), flat_dp2.begin() + i * length);
-            }
-
-            // Call the CUDA function
-            detect_collision_batch(flat_dp1.data(), flat_dp2.data(), length, batch_size);
+            process_keys_on_gpu(
+                dp1_keys_bytes_batch.data(), dp1_count,
+                dp2_keys_bytes_batch.data(), dp2_count,
+                KEY_SIZE_BYTES);
 
             // Clear batches
-            dp1_batch.clear();
-            dp2_batch.clear();
+            dp1_keys_bytes_batch.clear();
+            dp2_keys_bytes_batch.clear();
         }
 
         // Update Kangaroo Counter periodically
@@ -177,9 +139,23 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
         if (std::chrono::duration_cast<std::chrono::seconds>(now - last_update_time).count() >= 2) {
             last_update_time = now;
             uint64_t current_count = kangaroo_counter.load();
-            double power_of_two = log2(current_count);
+            double power_of_two = log2(static_cast<double>(current_count));
 
             updateKangarooCounter(power_of_two);
         }
+    }
+
+    // Process any remaining keys
+    if (!dp1_keys_bytes_batch.empty() && !dp2_keys_bytes_batch.empty()) {
+        int dp1_count = dp1_keys_bytes_batch.size() / KEY_SIZE_BYTES;
+        int dp2_count = dp2_keys_bytes_batch.size() / KEY_SIZE_BYTES;
+
+        process_keys_on_gpu(
+            dp1_keys_bytes_batch.data(), dp1_count,
+            dp2_keys_bytes_batch.data(), dp2_count,
+            KEY_SIZE_BYTES);
+
+        dp1_keys_bytes_batch.clear();
+        dp2_keys_bytes_batch.clear();
     }
 }
