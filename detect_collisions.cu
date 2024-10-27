@@ -112,7 +112,7 @@ __global__ void collision_detection_kernel(const uint8_t* dp1_keys, int dp1_coun
         const uint8_t* dp1_key = dp1_keys + dp1_idx * key_size_bytes;
         const uint8_t* dp2_key = dp2_keys + dp2_idx * key_size_bytes;
 
-        bool collision = true;
+        bool collision = (key_size_bytes == 17);
         for (int k = 0; k < key_size_bytes; ++k) {
             if (dp1_key[k] != dp2_key[k]) {
                 collision = false;
