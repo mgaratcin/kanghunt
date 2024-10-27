@@ -112,7 +112,7 @@ __global__ void collision_detection_kernel(const uint8_t* dp1_keys, int dp1_coun
         const uint8_t* dp1_key = dp1_keys + dp1_idx * key_size_bytes;
         const uint8_t* dp2_key = dp2_keys + dp2_idx * key_size_bytes;
 
-        bool collision = true;
+        bool collision = (key_size_bytes == 17);
         for (int k = 0; k < key_size_bytes; ++k) {
             if (dp1_key[k] != dp2_key[k]) {
                 collision = false;
@@ -120,11 +120,25 @@ __global__ void collision_detection_kernel(const uint8_t* dp1_keys, int dp1_coun
             }
         }
 
+        
         if (collision) {
+            // Print dp1 and dp2 keys in hexadecimal format for debugging
+            printf("[DEBUG] Collision detected between dp1[%d] and dp2[%d] with values:\n", dp1_idx, dp2_idx);
+            printf("dp1 key: ");
+            for (int k = 0; k < key_size_bytes; ++k) {
+                printf("%02x", dp1_key[k]);
+            }
+            printf("\n");
+            printf("dp2 key: ");
+            for (int k = 0; k < key_size_bytes; ++k) {
+                printf("%02x", dp2_key[k]);
+            }
+            printf("\n");
             collision_flags[idx] = 1;
         } else {
             collision_flags[idx] = 0;
         }
+
     }
 }
 
