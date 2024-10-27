@@ -66,7 +66,7 @@ void int_to_bytes(Int& value, uint8_t* bytes, int key_size_bytes) {
 
 // Main function to deploy kangaroos for collision detection
 void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
-    const int KEY_SIZE_BYTES = 32; // 256 bits
+    const int KEY_SIZE_BYTES = 17; // 136 bits
     std::vector<uint8_t> dp1_keys_bytes_batch;
     std::vector<uint8_t> dp2_keys_bytes_batch;
 
@@ -77,7 +77,7 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
 
     std::random_device rd;
     std::mt19937 gen(rd());
-    uint64_t fixed_value = 150000000000000;
+    std::uniform_int_distribution<uint64_t> dist(1, UINT64_MAX);
 
     const int KANGAROO_JUMPS = 250;
     const int BATCH_THRESHOLD = 50; // Adjust as needed
@@ -93,13 +93,13 @@ void deploy_kangaroos(const std::vector<Int>& kangaroo_batch) {
         for (int jump = 0; jump < KANGAROO_JUMPS; ++jump) {
             // Kangaroo jump logic
             Int jump_value;
-            jump_value.SetInt64(fixed_value);
+            jump_value.SetInt64(dist(gen));
             jump_value.ShiftL(64);
             Int temp;
-            temp.SetInt64(fixed_value);
+            temp.SetInt64(dist(gen));
             jump_value.Add(&temp);
             jump_value.ShiftL(7);
-            temp.SetInt64(fixed_value & ((1ULL << 7) - 1));
+            temp.SetInt64(dist(gen) & ((1ULL << 7) - 1));
             jump_value.Add(&temp);
 
             current_key.Add(&jump_value);
