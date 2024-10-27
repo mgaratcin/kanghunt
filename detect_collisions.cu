@@ -30,7 +30,7 @@ __global__ void dp1_condition_kernel(const uint8_t* keys_bytes, int key_size_byt
         // Since keys are 256 bits, we need to check the last 20 bits
 
         int byte_index = key_size_bytes - 1;
-        int bits_to_check = 20;
+        int bits_to_check = 50;
         int full_bytes = bits_to_check / 8; // 2 bytes
         int remaining_bits = bits_to_check % 8; // 4 bits
 
@@ -69,7 +69,7 @@ __global__ void dp2_condition_kernel(const uint8_t* keys_bytes, int key_size_byt
         // Condition for dp2: binary length is 136 bits and last 34 bits are zero
 
         int byte_index = key_size_bytes - 1;
-        int bits_to_check = 34;
+        int bits_to_check = 50;
         int full_bytes = bits_to_check / 8; // 4 bytes
         int remaining_bits = bits_to_check % 8; // 2 bits
 
