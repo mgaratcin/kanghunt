@@ -1,6 +1,6 @@
 #include "deploy_kangaroos.h"
 #include <iostream>
-#include "secp256k1/SECP256K1.h"
+#include "secp256k1/SECP256k1.h"
 #include "secp256k1/Point.h"
 #include "secp256k1/Int.h"
 #include <random>
