@@ -1,5 +1,5 @@
 
-#include <cstdio>   // Ensure printf is defined in CUDA environment
+#include <cstdio>   // Ensure printf is defined in CUDA environment 
 #include <cstdint>  // Ensure uint64_t is recognized 
 #include <cuda_runtime.h>
 
