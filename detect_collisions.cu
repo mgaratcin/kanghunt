@@ -11,7 +11,7 @@ __global__ void detect_collisions_kernel(uint64_t* base_keys, uint64_t* current_
     if (idx < batch_size) {
         // Compare base_keys and current_keys as uint64_t values for collision detection
         if (base_keys[idx] == current_keys[idx]) {
-            printf("Collision detected for key at index %d\n", idx);
+            //printf("Collision detected for key at index %d\n", idx);
         }
     }
 }
