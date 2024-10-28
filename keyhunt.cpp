@@ -8,6 +8,8 @@
 #include "secp256k1/Int.h"
 #include "secp256k1/SECP256k1.h"
 
+Int base_key;
+
 // Kangaroo batch storage, declared globally
 extern std::vector<Int> kangaroo_batch; // Ensure it's accessible across the file
 const int KANGAROO_JUMPS = 2048;
