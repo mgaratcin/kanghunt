@@ -1,4 +1,3 @@
-#include "shared_keys.h"
 #include "deploy_kangaroos.h"
 #include <iostream>
 #include "secp256k1/SECP256k1.h"
