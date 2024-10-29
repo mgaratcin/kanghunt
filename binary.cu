@@ -8,7 +8,7 @@
 #define BLOCKS 4096 // Increase block count to maximize GPU utilization and achieve faster execution
 #define TARGET_TAIL_BITS 20
 #define PRINT_INTERVAL 10000000ULL
-#define MAX_STEPS 1000000000ULL
+#define MAX_STEPS 10000000000ULL
 #define MAX_STORE_VALUES 1024
 
 // Device function to check if a value ends with 20 zeros
