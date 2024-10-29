@@ -8,7 +8,8 @@
 #define BLOCKS 4096 // Increase block count to maximize GPU utilization and achieve faster execution
 #define TARGET_TAIL_BITS 20
 #define PRINT_INTERVAL 10000000ULL
-#define MAX_STEPS 10000000000ULL
+#define BATCH_SIZE 10000000ULL // Define batch size for iteration
+#define MAX_STEPS 100000000000ULL // Define the maximum number of steps for iteration
 #define MAX_STORE_VALUES 1024
 
 // Device function to check if a value ends with 20 zeros
@@ -63,68 +64,72 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
     // Using a larger increment for tame_low to speed up tame path updates
     const unsigned long long tame_increment = 1024;
 
-    while (true)
+    while (steps_tame < (MAX_STEPS / tame_increment))
     {
-        // Increment tame path by a larger value to increase speed
-        tame_low += tame_increment;
-        if (tame_low < tame_increment)
+        for (unsigned long long batch = 0; batch < BATCH_SIZE; ++batch)
         {
-            tame_mid++;
-            if (tame_mid == 0) tame_high = (tame_high + 1) & 0x7FULL;
-        }
-        steps_tame++;
-
-        // Increment wild path by a pseudo-random value less than 135 bits
-        unsigned long long random_increment = ((curand(&localState) & 0xFFFFFFFFFFFFULL) << 12) | (curand(&localState) & 0xFFFULL);
-        wild_low += random_increment;
-        if (wild_low < random_increment)
-        {
-            wild_mid++;
-            if (wild_mid == 0) wild_high = (wild_high + 1) & 0x7FULL;
-        }
-        steps_wild++;
-
-        // Check if either value ends with 20 zeros and store if needed
-        if (ends_with_20_zeros(tame_low))
-        {
-            int store_idx = atomicAdd(tame_store_idx, 1);
-            if (store_idx < MAX_STORE_VALUES)
+            // Increment tame path by a larger value to increase speed
+            tame_low += tame_increment;
+            if (tame_low < tame_increment)
             {
-                stored_tame_high[store_idx] = tame_high;
-                stored_tame_mid[store_idx] = tame_mid;
-                stored_tame_low[store_idx] = tame_low;
+                tame_mid++;
+                if (tame_mid == 0) tame_high = (tame_high + 1) & 0x7FULL;
             }
-        }
-        if (ends_with_20_zeros(wild_low))
-        {
-            int store_idx = atomicAdd(wild_store_idx, 1);
-            if (store_idx < MAX_STORE_VALUES)
+            steps_tame++;
+
+            // Increment wild path by a pseudo-random value less than 135 bits
+            unsigned long long random_increment = ((curand(&localState) & 0xFFFFFFFFFFFFULL) << 12) | (curand(&localState) & 0xFFFULL);
+            wild_low += random_increment;
+            if (wild_low < random_increment)
             {
-                stored_wild_high[store_idx] = wild_high;
-                stored_wild_mid[store_idx] = wild_mid;
-                stored_wild_low[store_idx] = wild_low;
+                wild_mid++;
+                if (wild_mid == 0) wild_high = (wild_high + 1) & 0x7FULL;
+            }
+            steps_wild++;
+
+            // Check if either value ends with 20 zeros and store if needed
+            if (ends_with_20_zeros(tame_low))
+            {
+                int store_idx = atomicAdd(tame_store_idx, 1);
+                if (store_idx < MAX_STORE_VALUES)
+                {
+                    stored_tame_high[store_idx] = tame_high;
+                    stored_tame_mid[store_idx] = tame_mid;
+                    stored_tame_low[store_idx] = tame_low;
+                }
+            }
+            if (ends_with_20_zeros(wild_low))
+            {
+                int store_idx = atomicAdd(wild_store_idx, 1);
+                if (store_idx < MAX_STORE_VALUES)
+                {
+                    stored_wild_high[store_idx] = wild_high;
+                    stored_wild_mid[store_idx] = wild_mid;
+                    stored_wild_low[store_idx] = wild_low;
+                }
+            }
+
+            // Check for collision
+            if (tame_high == wild_high && tame_mid == wild_mid && tame_low == wild_low)
+            {
+                printf("Collision detected! Steps Tame: %llu, Steps Wild: %llu\n", steps_tame, steps_wild);
             }
         }
 
-        // Check for collision
-        if (tame_high == wild_high && tame_mid == wild_mid && tame_low == wild_low)
+        // Print progress at each batch
+        if (idx == 0)
         {
-            printf("Collision detected! Steps Tame: %llu, Steps Wild: %llu\n", steps_tame, steps_wild);
-            break;
+            printf("Batch completed: Steps Tame: %llu, Steps Wild: %llu\n", steps_tame * tame_increment, steps_wild);
         }
+    }
 
-        // Break after MAX_STEPS to prevent infinite loop
-        if (steps_tame >= MAX_STEPS / tame_increment || steps_wild >= MAX_STEPS)
-        {
-            if (idx == 0) {
-                printf("Max steps reached without collision.\n");
-                printf("Final Tame Value: ");
-                print_135_bit_value_device(tame_high, tame_mid, tame_low);
-                printf("Final Wild Value: ");
-                print_135_bit_value_device(wild_high, wild_mid, wild_low);
-            }
-            break;
-        }
+    if (idx == 0) {
+        printf("Max steps reached without collision.\n");
+        printf("Final Tame Value: ");
+        print_135_bit_value_device(tame_high, tame_mid, tame_low);
+        printf("Final Wild Value: ");
+        print_135_bit_value_device(wild_high, wild_mid, wild_low);
+        printf("Final Steps Tame: %llu, Final Steps Wild: %llu\n", steps_tame * tame_increment, steps_wild);
     }
 
     state[idx] = localState;
