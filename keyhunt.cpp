@@ -1,4 +1,3 @@
-#include "shared_keys.h" 
 #include "deploy_kangaroos.h"
 #include <vector>
 #include <cstdio>
@@ -7,8 +6,6 @@
 #include "secp256k1/Point.h" // Correct header paths
 #include "secp256k1/Int.h"
 #include "secp256k1/SECP256k1.h"
-
-Int base_key;
 
 // Kangaroo batch storage, declared globally
 extern std::vector<Int> kangaroo_batch; // Ensure it's accessible across the file
