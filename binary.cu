@@ -1,9 +1,10 @@
 #include <stdio.h>
 #include <curand_kernel.h>
 #include <string.h>
+#include <math.h> // Include math library for log2f
 
 #define BINARY_LENGTH 135
-#define INITIAL_VALUE "0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+#define INITIAL_VALUE "0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 #define THREADS_PER_BLOCK 256 // Increase thread count to maximize occupancy
 #define BLOCKS 256 // Increase block count to maximize GPU utilization and achieve faster execution
 #define TARGET_TAIL_BITS 20
@@ -106,7 +107,11 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
         // Print progress at each batch
         if (idx == 0)
         {
-            printf("Batch completed: Steps Tame: %llu, Steps Wild: %llu\n", steps_tame * tame_increment, steps_wild);
+            // Calculate Total Operations = (steps_tame * tame_increment) + steps_wild
+            double total_operations = (double)(steps_tame * tame_increment) + (double)(steps_wild);
+            double n = log2(total_operations);
+
+            printf("Batch completed: Total operations: 2^%.2lf\n", n);
         }
 
         // Periodically update the global state to prevent corruption
