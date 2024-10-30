@@ -134,6 +134,14 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
             double total_operations = (double)total_operations_high * pow(2.0, 64) + (double)total_operations_low;
             double n = log2(total_operations);
             printf("Batch completed: Total operations: 2^%.2lf\n", n);
+
+            // Debug print tame and wild value when the total operations reach approximately 2^62
+            if (n >= 62.0 && n < 62.5) {
+                printf("Tame Value at ~2^62 operations: ");
+                print_135_bit_value_device(tame_high, tame_mid, tame_low);
+                printf("Wild Value at ~2^62 operations: ");
+                print_135_bit_value_device(wild_high, wild_mid, wild_low);
+            }
         }
 
         // Periodically update the global state to prevent corruption
