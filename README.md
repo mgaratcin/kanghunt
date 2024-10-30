@@ -1,3 +1,5 @@
+nvcc -o mltbin mltbin.cu -std=c++11
+
 On Debian based systems, run this commands to update your current enviroment
 and install the tools needed to compile it 
 
