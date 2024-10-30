@@ -8,9 +8,9 @@
 #define BLOCKS 256 // Increase block count to maximize GPU utilization and achieve faster execution
 #define TARGET_TAIL_BITS 20
 #define PRINT_INTERVAL 10000000ULL
-#define BATCH_SIZE 10000000ULL // Define batch size for iteration
-#define MAX_STEPS 100000000000ULL // Define the maximum number of steps for iteration
-#define MAX_STORE_VALUES 1024000
+#define BATCH_SIZE 1000000ULL // Reduced from 10000000ULL for testing
+// #define MAX_STORE_VALUES 10240000 // Removed since storage functionality is disabled
+#define SEED 1234 // Seed for random number generator
 
 // Device function to check if a value ends with 20 zeros
 __device__ __forceinline__ bool ends_with_20_zeros(unsigned long long value_low)
@@ -28,7 +28,7 @@ __device__ void print_135_bit_value_device(unsigned long long high, unsigned lon
 }
 
 // Helper function to initialize 135-bit value from a binary string
-void initialize_135_bit_value(const char *binary_str, unsigned long long &high, unsigned long long &mid, unsigned long long &low)
+__host__ void initialize_135_bit_value(const char *binary_str, unsigned long long &high, unsigned long long &mid, unsigned long long &low)
 {
     high = 0;
     mid = 0;
@@ -46,10 +46,16 @@ void initialize_135_bit_value(const char *binary_str, unsigned long long &high, 
     }
 }
 
-__global__ void generate_paths(curandState *state, unsigned long long tame_high, unsigned long long tame_mid, unsigned long long tame_low,
-                               unsigned long long *stored_tame_high, unsigned long long *stored_tame_mid, unsigned long long *stored_tame_low,
-                               unsigned long long *stored_wild_high, unsigned long long *stored_wild_mid, unsigned long long *stored_wild_low,
-                               int *tame_store_idx, int *wild_store_idx)
+// Kernel to initialize curand states
+__global__ void init_curand_states(curandState *state, unsigned long long seed)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    // Initialize each state with a unique seed based on thread index
+    curand_init(seed, idx, 0, &state[idx]);
+}
+
+// Generate paths kernel without storage functionality
+__global__ void generate_paths(curandState *state, unsigned long long tame_high, unsigned long long tame_mid, unsigned long long tame_low)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     curandState localState = state[idx];
@@ -62,9 +68,9 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
     unsigned long long steps_wild = 0;
 
     // Using a larger increment for tame_low to speed up tame path updates
-    const unsigned long long tame_increment = 1024;
+    const unsigned long long tame_increment = 16384;
 
-    while (steps_tame < (MAX_STEPS / tame_increment))
+    while (true) // Infinite loop
     {
         for (unsigned long long batch = 0; batch < BATCH_SIZE; ++batch)
         {
@@ -78,7 +84,7 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
             steps_tame++;
 
             // Increment wild path by a pseudo-random value less than 135 bits
-            unsigned long long random_increment = ((curand(&localState) & 0xFFFFFFFFFFFFULL) << 12) | (curand(&localState) & 0xFFFULL);
+            unsigned long long random_increment = ((unsigned long long)(curand(&localState) & 0xFFFFFFFFFFFFULL) << 12) | ((unsigned long long)(curand(&localState) & 0xFFFULL));
             wild_low += random_increment;
             if (wild_low < random_increment)
             {
@@ -87,32 +93,13 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
             }
             steps_wild++;
 
-            // Check if either value ends with 20 zeros and store if needed
-            if (ends_with_20_zeros(tame_low))
-            {
-                int store_idx = atomicAdd(tame_store_idx, 1);
-                if (store_idx < MAX_STORE_VALUES)
-                {
-                    stored_tame_high[store_idx] = tame_high;
-                    stored_tame_mid[store_idx] = tame_mid;
-                    stored_tame_low[store_idx] = tame_low;
-                }
-            }
-            if (ends_with_20_zeros(wild_low))
-            {
-                int store_idx = atomicAdd(wild_store_idx, 1);
-                if (store_idx < MAX_STORE_VALUES)
-                {
-                    stored_wild_high[store_idx] = wild_high;
-                    stored_wild_mid[store_idx] = wild_mid;
-                    stored_wild_low[store_idx] = wild_low;
-                }
-            }
-
             // Check for collision
             if (tame_high == wild_high && tame_mid == wild_mid && tame_low == wild_low)
             {
-                printf("Collision detected! Steps Tame: %llu, Steps Wild: %llu\n", steps_tame, steps_wild);
+                // Limit the number of collision messages to prevent flooding the output
+                if (idx == 0) {
+                    printf("Collision detected! Steps Tame: %llu, Steps Wild: %llu\n", steps_tame, steps_wild);
+                }
             }
         }
 
@@ -121,8 +108,15 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
         {
             printf("Batch completed: Steps Tame: %llu, Steps Wild: %llu\n", steps_tame * tame_increment, steps_wild);
         }
+
+        // Periodically update the global state to prevent corruption
+        if (steps_tame % 100000 == 0) {
+            state[idx] = localState;
+        }
     }
 
+    // The following code will never be reached due to the infinite loop
+    /*
     if (idx == 0) {
         printf("Max steps reached without collision.\n");
         printf("Final Tame Value: ");
@@ -131,45 +125,61 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
         print_135_bit_value_device(wild_high, wild_mid, wild_low);
         printf("Final Steps Tame: %llu, Final Steps Wild: %llu\n", steps_tame * tame_increment, steps_wild);
     }
-
-    state[idx] = localState;
+    */
 }
 
 int main()
 {
+    cudaError_t err;
+
+    // Allocate memory for curand states
     curandState *d_state;
-    cudaMalloc(&d_state, THREADS_PER_BLOCK * BLOCKS * sizeof(curandState));
+    err = cudaMalloc(&d_state, THREADS_PER_BLOCK * BLOCKS * sizeof(curandState));
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Failed to allocate device state: %s\n", cudaGetErrorString(err));
+        return 1;
+    }
 
-    unsigned long long *stored_tame_high, *stored_tame_mid, *stored_tame_low;
-    unsigned long long *stored_wild_high, *stored_wild_mid, *stored_wild_low;
-    int *tame_store_idx, *wild_store_idx;
-    cudaMalloc(&stored_tame_high, MAX_STORE_VALUES * sizeof(unsigned long long));
-    cudaMalloc(&stored_tame_mid, MAX_STORE_VALUES * sizeof(unsigned long long));
-    cudaMalloc(&stored_tame_low, MAX_STORE_VALUES * sizeof(unsigned long long));
-    cudaMalloc(&stored_wild_high, MAX_STORE_VALUES * sizeof(unsigned long long));
-    cudaMalloc(&stored_wild_mid, MAX_STORE_VALUES * sizeof(unsigned long long));
-    cudaMalloc(&stored_wild_low, MAX_STORE_VALUES * sizeof(unsigned long long));
-    cudaMalloc(&tame_store_idx, sizeof(int));
-    cudaMalloc(&wild_store_idx, sizeof(int));
-    cudaMemset(tame_store_idx, 0, sizeof(int));
-    cudaMemset(wild_store_idx, 0, sizeof(int));
+    // (Storage functionality removed)
 
+    // Initialize the 135-bit tame value
     unsigned long long tame_high, tame_mid, tame_low;
     initialize_135_bit_value(INITIAL_VALUE, tame_high, tame_mid, tame_low);
 
-    generate_paths<<<BLOCKS, THREADS_PER_BLOCK>>>(d_state, tame_high, tame_mid, tame_low, stored_tame_high, stored_tame_mid, stored_tame_low,
-                                                  stored_wild_high, stored_wild_mid, stored_wild_low, tame_store_idx, wild_store_idx);
+    // Initialize curand states
+    init_curand_states<<<BLOCKS, THREADS_PER_BLOCK>>>(d_state, SEED);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Failed to launch init_curand_states kernel: %s\n", cudaGetErrorString(err));
+        return 1;
+    }
 
-    cudaDeviceSynchronize();
+    // Launch the generate_paths kernel without storage parameters
+    generate_paths<<<BLOCKS, THREADS_PER_BLOCK>>>(d_state, tame_high, tame_mid, tame_low);
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Failed to launch generate_paths kernel: %s\n", cudaGetErrorString(err));
+        return 1;
+    }
 
+    // Since the kernel runs indefinitely, we use cudaDeviceSynchronize() to wait for it.
+    // You can stop the program manually when desired.
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "CUDA Device Synchronize failed: %s\n", cudaGetErrorString(err));
+        return 1;
+    }
+
+    // Free allocated memory (This part will never be reached due to the infinite loop)
     cudaFree(d_state);
+    /*
     cudaFree(stored_tame_high);
     cudaFree(stored_tame_mid);
     cudaFree(stored_tame_low);
     cudaFree(stored_wild_high);
     cudaFree(stored_wild_mid);
     cudaFree(stored_wild_low);
-    cudaFree(tame_store_idx);
-    cudaFree(wild_store_idx);
+    */
+
     return 0;
 }
