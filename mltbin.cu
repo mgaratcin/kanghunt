@@ -16,7 +16,7 @@
 #define PRINT_INTERVAL 1000000000ULL
 #define BATCH_SIZE 100000000ULL // Adjusted for testing
 #define SEED 1234 // Base seed for random number generator
-#define MAX_DISTINGUISHED_POINTS 1000000 // Maximum number of distinguished points to store
+#define MAX_DISTINGUISHED_POINTS 1000000000 // Maximum number of distinguished points to store
 
 struct Counter128 {
     unsigned long long low;
