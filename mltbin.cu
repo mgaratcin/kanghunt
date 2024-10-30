@@ -5,23 +5,37 @@
 #include <cuda_runtime.h>
 #include <thread>
 #include <vector>
+#include <unordered_map> // For storing distinguished points
+#include <mutex>
 
 #define BINARY_LENGTH 135
 #define INITIAL_VALUE "0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 #define THREADS_PER_BLOCK 256 // Number of threads per block
 #define BLOCKS_PER_GPU 256    // Number of blocks per GPU
-#define TARGET_TAIL_BITS 20
+#define TARGET_TAIL_BITS 25   // Distinguished points with at least 25 trailing zeros
 #define PRINT_INTERVAL 1000000000ULL
 #define BATCH_SIZE 100000000ULL // Adjusted for testing
 #define SEED 1234 // Base seed for random number generator
+#define MAX_DISTINGUISHED_POINTS 1000000 // Maximum number of distinguished points to store
 
 struct Counter128 {
     unsigned long long low;
     unsigned long long high;
 };
 
-// Device function to check if a value ends with 20 zeros
-__device__ __forceinline__ bool ends_with_20_zeros(unsigned long long value_low)
+struct Point {
+    unsigned long long high;
+    unsigned long long mid;
+    unsigned long long low;
+    unsigned long long steps;
+    bool is_tame;
+};
+
+std::unordered_map<unsigned long long, Point> distinguished_points;
+std::mutex dp_mutex;
+
+// Device function to check if a value ends with TARGET_TAIL_BITS zeros
+__device__ __forceinline__ bool ends_with_25_zeros(unsigned long long value_low)
 {
     return (value_low & ((1ULL << TARGET_TAIL_BITS) - 1)) == 0;
 }
@@ -72,8 +86,8 @@ __device__ void atomicAdd128(Counter128 *counter, unsigned long long value)
     }
 }
 
-// Generate paths kernel without storage functionality
-__global__ void generate_paths(curandState *state, unsigned long long tame_high, unsigned long long tame_mid, unsigned long long tame_low, Counter128 *global_counter)
+// Generate paths kernel with distinguished points storage functionality
+__global__ void generate_paths(curandState *state, unsigned long long tame_high, unsigned long long tame_mid, unsigned long long tame_low, Counter128 *global_counter, Point *dp_points, int *dp_count)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     curandState localState = state[idx];
@@ -102,6 +116,18 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
             tame_low = new_tame_low;
             steps_tame++;
 
+            // Check if tame point is distinguished
+            if (ends_with_25_zeros(tame_low))
+            {
+                int dp_idx = atomicAdd(dp_count, 1);
+                if (dp_idx < MAX_DISTINGUISHED_POINTS) {
+                    dp_points[dp_idx] = {tame_high, tame_mid, tame_low, steps_tame, true};
+                } else {
+                    // Prevent out-of-bounds memory access
+                    atomicSub(dp_count, 1);
+                }
+            }
+
             // Increment wild path by a pseudo-random value less than 135 bits
             unsigned long long random_increment = ((unsigned long long)(curand(&localState) & 0xFFFFFFFFFFFFULL) << 12) | ((unsigned long long)(curand(&localState) & 0xFFFULL));
             unsigned long long new_wild_low = wild_low + random_increment;
@@ -113,12 +139,15 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
             wild_low = new_wild_low;
             steps_wild++;
 
-            // Check for collision
-            if (tame_high == wild_high && tame_mid == wild_mid && tame_low == wild_low)
+            // Check if wild point is distinguished
+            if (ends_with_25_zeros(wild_low))
             {
-                // Limit the number of collision messages to prevent flooding the output
-                if (idx == 0) {
-                    printf("Collision detected! Steps Tame: %llu, Steps Wild: %llu\n", steps_tame, steps_wild);
+                int dp_idx = atomicAdd(dp_count, 1);
+                if (dp_idx < MAX_DISTINGUISHED_POINTS) {
+                    dp_points[dp_idx] = {wild_high, wild_mid, wild_low, steps_wild, false};
+                } else {
+                    // Prevent out-of-bounds memory access
+                    atomicSub(dp_count, 1);
                 }
             }
         }
@@ -126,22 +155,14 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
         // Use atomic operation to update the global 128-bit counter
         atomicAdd128(global_counter, steps_tame * tame_increment + steps_wild);
 
-        // Print progress at each batch
-        if (idx == 0)
-        {
+        // Print progress periodically
+        if (idx == 0 && global_counter->low % PRINT_INTERVAL < tame_increment * BATCH_SIZE) {
             unsigned long long total_operations_low = global_counter->low;
             unsigned long long total_operations_high = global_counter->high;
             double total_operations = (double)total_operations_high * pow(2.0, 64) + (double)total_operations_low;
             double n = log2(total_operations);
             printf("Batch completed: Total operations: 2^%.2lf\n", n);
-
-            // Debug print tame and wild value when the total operations reach approximately 2^62
-            if (n >= 62.0 && n < 62.5) {
-                printf("Tame Value at ~2^62 operations: ");
-                print_135_bit_value_device(tame_high, tame_mid, tame_low);
-                printf("Wild Value at ~2^62 operations: ");
-                print_135_bit_value_device(wild_high, wild_mid, wild_low);
-            }
+            printf("Total distinguished points found so far: %d\n", *dp_count);
         }
 
         // Periodically update the global state to prevent corruption
@@ -176,6 +197,24 @@ void run_on_device(int device_id, const char* initial_value, unsigned long long 
         return;
     }
 
+    // Allocate memory for distinguished points
+    Point *d_dp_points;
+    int *d_dp_count;
+    err = cudaMalloc(&d_dp_points, MAX_DISTINGUISHED_POINTS * sizeof(Point));
+    if (err != cudaSuccess) {
+        fprintf(stderr, "GPU %d: Failed to allocate distinguished points memory: %s\n", device_id, cudaGetErrorString(err));
+        cudaFree(d_state);
+        return;
+    }
+    err = cudaMalloc(&d_dp_count, sizeof(int));
+    if (err != cudaSuccess) {
+        fprintf(stderr, "GPU %d: Failed to allocate distinguished points count memory: %s\n", device_id, cudaGetErrorString(err));
+        cudaFree(d_state);
+        cudaFree(d_dp_points);
+        return;
+    }
+    cudaMemset(d_dp_count, 0, sizeof(int));
+
     // Initialize the 135-bit tame value
     unsigned long long tame_high, tame_mid, tame_low;
     initialize_135_bit_value(initial_value, tame_high, tame_mid, tame_low);
@@ -187,15 +226,19 @@ void run_on_device(int device_id, const char* initial_value, unsigned long long 
     if (err != cudaSuccess) {
         fprintf(stderr, "GPU %d: Failed to launch init_curand_states kernel: %s\n", device_id, cudaGetErrorString(err));
         cudaFree(d_state);
+        cudaFree(d_dp_points);
+        cudaFree(d_dp_count);
         return;
     }
 
     // Launch the generate_paths kernel
-    generate_paths<<<BLOCKS_PER_GPU, THREADS_PER_BLOCK>>>(d_state, tame_high, tame_mid, tame_low, global_counter);
+    generate_paths<<<BLOCKS_PER_GPU, THREADS_PER_BLOCK>>>(d_state, tame_high, tame_mid, tame_low, global_counter, d_dp_points, d_dp_count);
     err = cudaGetLastError();
     if (err != cudaSuccess) {
         fprintf(stderr, "GPU %d: Failed to launch generate_paths kernel: %s\n", device_id, cudaGetErrorString(err));
         cudaFree(d_state);
+        cudaFree(d_dp_points);
+        cudaFree(d_dp_count);
         return;
     }
 
@@ -204,11 +247,15 @@ void run_on_device(int device_id, const char* initial_value, unsigned long long 
     if (err != cudaSuccess) {
         fprintf(stderr, "GPU %d: CUDA Device Synchronize failed: %s\n", device_id, cudaGetErrorString(err));
         cudaFree(d_state);
+        cudaFree(d_dp_points);
+        cudaFree(d_dp_count);
         return;
     }
 
     // Free allocated memory (Unreachable due to infinite loop)
     cudaFree(d_state);
+    cudaFree(d_dp_points);
+    cudaFree(d_dp_count);
 }
 
 int main()
@@ -229,7 +276,11 @@ int main()
 
     // Allocate unified memory for the global counter
     Counter128 *global_counter;
-    cudaMallocManaged(&global_counter, sizeof(Counter128));
+    err = cudaMallocManaged(&global_counter, sizeof(Counter128));
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Failed to allocate global counter memory: %s\n", cudaGetErrorString(err));
+        return 1;
+    }
     global_counter->low = 0;
     global_counter->high = 0;
 
