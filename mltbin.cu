@@ -15,6 +15,11 @@
 #define BATCH_SIZE 100000000ULL // Adjusted for testing
 #define SEED 1234 // Base seed for random number generator
 
+struct Counter128 {
+    unsigned long long low;
+    unsigned long long high;
+};
+
 // Device function to check if a value ends with 20 zeros
 __device__ __forceinline__ bool ends_with_20_zeros(unsigned long long value_low)
 {
@@ -57,8 +62,18 @@ __global__ void init_curand_states(curandState *state, unsigned long long seed)
     curand_init(seed, idx, 0, &state[idx]);
 }
 
+// Device function to add a value to a 128-bit counter
+__device__ void atomicAdd128(Counter128 *counter, unsigned long long value)
+{
+    unsigned long long old_low = atomicAdd(&(counter->low), value);
+    if (old_low + value < old_low) // Handle overflow of the lower part
+    {
+        atomicAdd(&(counter->high), 1ULL);
+    }
+}
+
 // Generate paths kernel without storage functionality
-__global__ void generate_paths(curandState *state, unsigned long long tame_high, unsigned long long tame_mid, unsigned long long tame_low, unsigned long long *global_counter)
+__global__ void generate_paths(curandState *state, unsigned long long tame_high, unsigned long long tame_mid, unsigned long long tame_low, Counter128 *global_counter)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     curandState localState = state[idx];
@@ -108,14 +123,16 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
             }
         }
 
-        // Use atomic operation to update the global counter
-        atomicAdd(global_counter, steps_tame * tame_increment + steps_wild);
+        // Use atomic operation to update the global 128-bit counter
+        atomicAdd128(global_counter, steps_tame * tame_increment + steps_wild);
 
         // Print progress at each batch
         if (idx == 0)
         {
-            unsigned long long total_operations = *global_counter;
-            double n = log2((double)total_operations);
+            unsigned long long total_operations_low = global_counter->low;
+            unsigned long long total_operations_high = global_counter->high;
+            double total_operations = (double)total_operations_high * pow(2.0, 64) + (double)total_operations_low;
+            double n = log2(total_operations);
             printf("Batch completed: Total operations: 2^%.2lf\n", n);
         }
 
@@ -127,7 +144,7 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
 }
 
 // Function to run on each GPU
-void run_on_device(int device_id, const char* initial_value, unsigned long long seed_offset, unsigned long long *global_counter)
+void run_on_device(int device_id, const char* initial_value, unsigned long long seed_offset, Counter128 *global_counter)
 {
     cudaError_t err;
 
@@ -203,9 +220,10 @@ int main()
     printf("Found %d CUDA device(s).\n", device_count);
 
     // Allocate unified memory for the global counter
-    unsigned long long *global_counter;
-    cudaMallocManaged(&global_counter, sizeof(unsigned long long));
-    *global_counter = 0;
+    Counter128 *global_counter;
+    cudaMallocManaged(&global_counter, sizeof(Counter128));
+    global_counter->low = 0;
+    global_counter->high = 0;
 
     // Create threads for each GPU
     std::vector<std::thread> threads;
