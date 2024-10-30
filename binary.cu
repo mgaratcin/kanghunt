@@ -69,7 +69,7 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
     unsigned long long steps_wild = 0;
 
     // Using a larger increment for tame_low to speed up tame path updates
-    const unsigned long long tame_increment = 16384;
+    const unsigned long long tame_increment = 65536;
 
     while (true) // Infinite loop
     {
