@@ -102,6 +102,14 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
     // Using a larger increment for tame_low to speed up tame path updates
     const unsigned long long tame_increment = 65536;
 
+    __shared__ bool printed_2_65;
+    __shared__ bool printed_2_75;
+    if (idx == 0) {
+        printed_2_65 = false;
+        printed_2_75 = false;
+    }
+    __syncthreads();
+
     while (true) // Infinite loop
     {
         for (unsigned long long batch = 0; batch < BATCH_SIZE; ++batch)
@@ -156,13 +164,33 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
         atomicAdd128(global_counter, steps_tame * tame_increment + steps_wild);
 
         // Print progress periodically
+        unsigned long long total_operations_low = global_counter->low;
+        unsigned long long total_operations_high = global_counter->high;
+        double total_operations = (double)total_operations_high * pow(2.0, 64) + (double)total_operations_low;
+        double n = log2(total_operations);
         if (idx == 0 && global_counter->low % PRINT_INTERVAL < tame_increment * BATCH_SIZE) {
-            unsigned long long total_operations_low = global_counter->low;
-            unsigned long long total_operations_high = global_counter->high;
-            double total_operations = (double)total_operations_high * pow(2.0, 64) + (double)total_operations_low;
-            double n = log2(total_operations);
             printf("Batch completed: Total operations: 2^%.2lf\n", n);
             printf("Total distinguished points found so far: %d\n", *dp_count);
+        }
+
+        // Print the tame and wild binaries at specific thresholds (2^65 and 2^75)
+        if (!printed_2_65 && total_operations_high == 1 && total_operations_low >= (1ULL << 1)) {
+            if (idx == 0) {
+                printf("2^65 Tame Binary: ");
+                print_135_bit_value_device(tame_high, tame_mid, tame_low);
+                printf("2^65 Wild Binary: ");
+                print_135_bit_value_device(wild_high, wild_mid, wild_low);
+                printed_2_65 = true;
+            }
+        }
+        if (!printed_2_75 && total_operations_high == 1ULL << 10 && total_operations_low >= (1ULL << 11)) {
+            if (idx == 0) {
+                printf("2^75 Tame Binary: ");
+                print_135_bit_value_device(tame_high, tame_mid, tame_low);
+                printf("2^75 Wild Binary: ");
+                print_135_bit_value_device(wild_high, wild_mid, wild_low);
+                printed_2_75 = true;
+            }
         }
 
         // Periodically update the global state to prevent corruption
