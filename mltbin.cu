@@ -58,7 +58,7 @@ __global__ void init_curand_states(curandState *state, unsigned long long seed)
 }
 
 // Generate paths kernel without storage functionality
-__global__ void generate_paths(curandState *state, unsigned long long tame_high, unsigned long long tame_mid, unsigned long long tame_low)
+__global__ void generate_paths(curandState *state, unsigned long long tame_high, unsigned long long tame_mid, unsigned long long tame_low, unsigned long long *global_counter)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     curandState localState = state[idx];
@@ -108,13 +108,14 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
             }
         }
 
+        // Use atomic operation to update the global counter
+        atomicAdd(global_counter, steps_tame * tame_increment + steps_wild);
+
         // Print progress at each batch
         if (idx == 0)
         {
-            // Calculate Total Operations = (steps_tame * tame_increment) + steps_wild
-            double total_operations = (double)(steps_tame * tame_increment) + (double)(steps_wild);
-            double n = log2(total_operations);
-
+            unsigned long long total_operations = *global_counter;
+            double n = log2((double)total_operations);
             printf("Batch completed: Total operations: 2^%.2lf\n", n);
         }
 
@@ -123,22 +124,10 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
             state[idx] = localState;
         }
     }
-
-    // The following code will never be reached due to the infinite loop
-    /*
-    if (idx == 0) {
-        printf("Max steps reached without collision.\n");
-        printf("Final Tame Value: ");
-        print_135_bit_value_device(tame_high, tame_mid, tame_low);
-        printf("Final Wild Value: ");
-        print_135_bit_value_device(wild_high, wild_mid, wild_low);
-        printf("Final Steps Tame: %llu, Final Steps Wild: %llu\n", steps_tame * tame_increment, steps_wild);
-    }
-    */
 }
 
 // Function to run on each GPU
-void run_on_device(int device_id, const char* initial_value, unsigned long long seed_offset)
+void run_on_device(int device_id, const char* initial_value, unsigned long long seed_offset, unsigned long long *global_counter)
 {
     cudaError_t err;
 
@@ -177,7 +166,7 @@ void run_on_device(int device_id, const char* initial_value, unsigned long long 
     }
 
     // Launch the generate_paths kernel
-    generate_paths<<<BLOCKS_PER_GPU, THREADS_PER_BLOCK>>>(d_state, tame_high, tame_mid, tame_low);
+    generate_paths<<<BLOCKS_PER_GPU, THREADS_PER_BLOCK>>>(d_state, tame_high, tame_mid, tame_low, global_counter);
     err = cudaGetLastError();
     if (err != cudaSuccess) {
         fprintf(stderr, "GPU %d: Failed to launch generate_paths kernel: %s\n", device_id, cudaGetErrorString(err));
@@ -213,9 +202,10 @@ int main()
 
     printf("Found %d CUDA device(s).\n", device_count);
 
-    // Initialize the 135-bit tame value on host
-    unsigned long long tame_high, tame_mid, tame_low;
-    initialize_135_bit_value(INITIAL_VALUE, tame_high, tame_mid, tame_low);
+    // Allocate unified memory for the global counter
+    unsigned long long *global_counter;
+    cudaMallocManaged(&global_counter, sizeof(unsigned long long));
+    *global_counter = 0;
 
     // Create threads for each GPU
     std::vector<std::thread> threads;
@@ -223,7 +213,7 @@ int main()
     {
         // Each GPU gets a unique seed offset to ensure different random sequences
         unsigned long long seed_offset = device_id * 1000;
-        threads.emplace_back(run_on_device, device_id, INITIAL_VALUE, seed_offset);
+        threads.emplace_back(run_on_device, device_id, INITIAL_VALUE, seed_offset, global_counter);
     }
 
     // Wait for all threads to finish (they won't, due to the infinite loop in the kernel)
@@ -231,6 +221,9 @@ int main()
     {
         t.join();
     }
+
+    // Free the global counter memory
+    cudaFree(global_counter);
 
     return 0;
 }
