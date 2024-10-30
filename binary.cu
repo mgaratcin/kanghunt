@@ -7,8 +7,8 @@
 #define THREADS_PER_BLOCK 256 // Increase thread count to maximize occupancy
 #define BLOCKS 256 // Increase block count to maximize GPU utilization and achieve faster execution
 #define TARGET_TAIL_BITS 20
-#define PRINT_INTERVAL 1000000000ULL
-#define BATCH_SIZE 100000000ULL // Reduced from 10000000ULL for testing
+#define PRINT_INTERVAL 10000000ULL
+#define BATCH_SIZE 1000000ULL // Reduced from 10000000ULL for testing
 // #define MAX_STORE_VALUES 10240000 // Removed since storage functionality is disabled
 #define SEED 1234 // Seed for random number generator
 
@@ -68,7 +68,7 @@ __global__ void generate_paths(curandState *state, unsigned long long tame_high,
     unsigned long long steps_wild = 0;
 
     // Using a larger increment for tame_low to speed up tame path updates
-    const unsigned long long tame_increment = 16384;
+    const unsigned long long tame_increment = 1024;
 
     while (true) // Infinite loop
     {
