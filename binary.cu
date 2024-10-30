@@ -4,13 +4,13 @@
 
 #define BINARY_LENGTH 135
 #define INITIAL_VALUE "0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-#define THREADS_PER_BLOCK 512 // Increase thread count to maximize occupancy
-#define BLOCKS 512 // Increase block count to maximize GPU utilization and achieve faster execution
+#define THREADS_PER_BLOCK 256 // Increase thread count to maximize occupancy
+#define BLOCKS 256 // Increase block count to maximize GPU utilization and achieve faster execution
 #define TARGET_TAIL_BITS 20
 #define PRINT_INTERVAL 10000000ULL
 #define BATCH_SIZE 10000000ULL // Define batch size for iteration
 #define MAX_STEPS 100000000000ULL // Define the maximum number of steps for iteration
-#define MAX_STORE_VALUES 1024
+#define MAX_STORE_VALUES 1024000
 
 // Device function to check if a value ends with 20 zeros
 __device__ __forceinline__ bool ends_with_20_zeros(unsigned long long value_low)
