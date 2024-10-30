@@ -1,4 +1,4 @@
-#include <stdio.h>
+#include <stdio.h> 
 #include <curand_kernel.h>
 #include <string.h>
 #include <math.h> // Include math library for log2f
