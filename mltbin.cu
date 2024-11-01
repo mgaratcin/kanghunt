@@ -14,7 +14,7 @@
 #define INITIAL_VALUE "0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 #define THREADS_PER_BLOCK 256 // Number of threads per block
 #define BLOCKS_PER_GPU 256    // Number of blocks per GPU
-#define TARGET_TAIL_BITS 40   // Distinguished points with at least 50 trailing zeros
+#define TARGET_TAIL_BITS 35   // Distinguished points with at least 50 trailing zeros
 #define BATCH_SIZE 1000000ULL // Adjusted for initial debugging
 #define SEED 1234 // Base seed for random number generator
 #define MAX_DISTINGUISHED_POINTS_PER_KERNEL 1000000 // Adjusted for initial debugging
