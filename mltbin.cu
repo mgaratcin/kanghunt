@@ -1,4 +1,4 @@
-#include <stdio.h>   
+#include <stdio.h>
 #include <curand_kernel.h>
 #include <string.h>
 #include <math.h> // For log2
@@ -21,19 +21,19 @@
 
 // Constants and Macros
 #define BINARY_LENGTH 135
-#define INITIAL_VALUE "0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+#define INITIAL_VALUE "1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" // Corrected to start with '1' followed by '0's
 #define THREADS_PER_BLOCK 256 // Number of threads per block
 #define BLOCKS_PER_GPU 256    // Number of blocks per GPU
 #define TARGET_TAIL_BITS 35   // Distinguished points with at least 35 trailing zeros
-#define BATCH_SIZE 1000000ULL // Adjusted for initial debugging
+#define BATCH_SIZE 1000000ULL // Number of iterations per kernel launch
 #define SEED 1234 // Base seed for random number generator
-#define MAX_DISTINGUISHED_POINTS_PER_KERNEL 1000000 // Adjusted for initial debugging
+#define MAX_DISTINGUISHED_POINTS_PER_KERNEL 1000000 // Maximum DPs per kernel
 #define BUFFER_SIZE 100000 // Number of Points to buffer before writing to disk
 #define COMPRESSION_BUFFER_SIZE (LZ4_compressBound(BUFFER_SIZE * sizeof(struct Point))) // Maximum compressed size
 
 // Structure Definitions
 
-// Packed Point structure to reduce size from 40 to 25 bytes
+// Packed Point structure to reduce size from 40 to 26 bytes
 #pragma pack(push, 1)
 struct Point {
     unsigned char high;        // 1 byte (7 bits used)
@@ -173,6 +173,9 @@ void detect_collisions(const std::vector<std::string>& filenames)
     std::vector<char> compressed_buffer;
     std::vector<char> decompressed_buffer;
 
+    // Initialize counter for total dps and tracking the 10,000th dp
+    unsigned long long total_dps = 0;
+
     for (const auto& filename : filenames) {
         std::ifstream dp_file(filename, std::ios::binary | std::ios::in);
         if (!dp_file.is_open()) {
@@ -220,6 +223,10 @@ void detect_collisions(const std::vector<std::string>& filenames)
             Point* points = reinterpret_cast<Point*>(decompressed_buffer.data());
 
             for (size_t i = 0; i < num_points; ++i) {
+                total_dps++;
+
+                // Detect and handle the 10,000th DP within run_on_device, so skip here
+
                 auto result = point_set.insert(points[i]);
                 if (!result.second) { // Duplicate found
                     collisions.push_back(points[i]);
@@ -239,6 +246,11 @@ void detect_collisions(const std::vector<std::string>& filenames)
     }
     else {
         printf("No collisions detected.\n");
+    }
+
+    // Notify if the 10,000th DP wasn't found
+    if (total_dps < 10000) {
+        printf("Less than 10,000 DPs were processed.\n");
     }
 }
 
@@ -399,7 +411,10 @@ void run_on_device(
     const char* initial_value,
     unsigned long long seed_offset,
     Counter128 *global_counter,
-    ThreadSafeQueue<CompressionTask> &compression_queue
+    ThreadSafeQueue<CompressionTask> &compression_queue,
+    std::atomic<unsigned long long> &global_dp_counter, // Reference to global DP counter
+    std::mutex &print_mutex, // Mutex to protect print statements
+    std::atomic<bool> &printed_10k_dp // Reference flag to indicate if 10k DP was printed
 )
 {
     cudaError_t err;
@@ -557,7 +572,43 @@ void run_on_device(
 
             // Buffer the points
             for (unsigned int i = 0; i < dp_count_host; ++i) {
+                // Increment the global DP counter atomically
+                unsigned long long current_count = global_dp_counter.fetch_add(1) + 1;
+
+                // Check if this is the 10,000th DP
+                if (current_count == 10000 && !printed_10k_dp.load()) {
+                    // Serialize the Point into a binary buffer
+                    unsigned char binary_dp[17]; // 135 bits = 17 bytes (136 bits)
+                    memset(binary_dp, 0, sizeof(binary_dp));
+
+                    // Copy 'high', 'mid', 'low' into binary_dp
+                    binary_dp[0] = h_dp_points[i].high; // 1 byte
+                    memcpy(&binary_dp[1], &h_dp_points[i].mid, sizeof(unsigned long long)); // 8 bytes
+                    memcpy(&binary_dp[9], &h_dp_points[i].low, sizeof(unsigned long long)); // 8 bytes
+
+                    // Convert binary_dp to hexadecimal string
+                    std::string hex_dp = "";
+                    for (int j = 0; j < 17; ++j) {
+                        char buf[3];
+                        snprintf(buf, sizeof(buf), "%02x", binary_dp[j]);
+                        hex_dp += buf;
+                    }
+
+                    // Lock the mutex before printing to prevent race conditions
+                    {
+                        std::lock_guard<std::mutex> lock(print_mutex);
+                        if (!printed_10k_dp.load()) { // Double-check within mutex
+                            printf("10,000th DP Found:\n");
+                            printf("Binary Format: %s\n", hex_dp.c_str());
+                            printed_10k_dp.store(true);
+                        }
+                    }
+                }
+
+                // Add the DP to the buffer
                 buffer.push_back(h_dp_points[i]);
+
+                // If buffer is full, enqueue it for compression
                 if (buffer.size() >= BUFFER_SIZE) {
                     // Create a compression task
                     CompressionTask task;
@@ -678,6 +729,11 @@ int main()
     // Create a thread-safe queue for compression tasks
     ThreadSafeQueue<CompressionTask> compression_queue;
 
+    // Create global counters for DPs
+    std::atomic<unsigned long long> global_dp_counter(0);
+    std::atomic<bool> printed_10k_dp(false);
+    std::mutex print_mutex;
+
     // Create compression worker threads (one per CPU core or as needed)
     unsigned int compression_threads_count = std::thread::hardware_concurrency();
     if (compression_threads_count == 0) compression_threads_count = 4; // Fallback to 4 threads
@@ -693,10 +749,10 @@ int main()
     {
         // Each GPU gets a unique seed offset to ensure different random sequences
         unsigned long long seed_offset = device_id * 1000;
-        device_threads.emplace_back(run_on_device, device_id, INITIAL_VALUE, seed_offset, global_counter, std::ref(compression_queue));
+        device_threads.emplace_back(run_on_device, device_id, INITIAL_VALUE, seed_offset, global_counter, std::ref(compression_queue), std::ref(global_dp_counter), std::ref(print_mutex), std::ref(printed_10k_dp));
     }
 
-    // Wait for all device threads to finish
+    // Wait for all device threads to finish (they run indefinitely)
     for (auto &t : device_threads)
     {
         t.join();
