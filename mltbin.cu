@@ -11,42 +11,41 @@
 #include <fstream>
 #include <unordered_set>
 #include <functional>
+#include <iostream>
+#include <queue>
+#include <condition_variable>
+
+// Include LZ4 headers
+#include <lz4.h>
+#include <lz4frame.h>
 
 // Constants and Macros
 #define BINARY_LENGTH 135
 #define INITIAL_VALUE "0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 #define THREADS_PER_BLOCK 256 // Number of threads per block
 #define BLOCKS_PER_GPU 256    // Number of blocks per GPU
-#define TARGET_TAIL_BITS 25   // Distinguished points with at least 35 trailing zeros
+#define TARGET_TAIL_BITS 35   // Distinguished points with at least 35 trailing zeros
 #define BATCH_SIZE 1000000ULL // Adjusted for initial debugging
 #define SEED 1234 // Base seed for random number generator
 #define MAX_DISTINGUISHED_POINTS_PER_KERNEL 1000000 // Adjusted for initial debugging
 #define BUFFER_SIZE 100000 // Number of Points to buffer before writing to disk
+#define COMPRESSION_BUFFER_SIZE (LZ4_compressBound(BUFFER_SIZE * sizeof(struct Point))) // Maximum compressed size
 
 // Structure Definitions
-struct Counter128 {
-    unsigned long long low;
-    unsigned long long high;
-};
 
+// Packed Point structure to reduce size from 40 to 25 bytes
+#pragma pack(push, 1)
 struct Point {
-    unsigned long long high;
-    unsigned long long mid;
-    unsigned long long low;
-    unsigned long long steps;
-    unsigned char is_tame; // Changed from bool to unsigned char for alignment
-    unsigned char padding[7]; // Padding to make the structure 40 bytes (aligned)
-
-    // Equality operator for unordered_set
-    bool operator==(const Point& other) const {
-        return (high == other.high) &&
-               (mid == other.mid) &&
-               (low == other.low);
-    }
+    unsigned char high;        // 1 byte (7 bits used)
+    unsigned long long mid;    // 8 bytes
+    unsigned long long low;    // 8 bytes
+    unsigned long long steps;  // 8 bytes
+    unsigned char is_tame;     // 1 byte
 };
+#pragma pack(pop)
 
 // Static assertion to ensure Point struct size is consistent
-static_assert(sizeof(Point) == 40, "Point struct size must be 40 bytes");
+static_assert(sizeof(Point) == 26, "Point struct size must be 26 bytes");
 
 // Device function to check if a value ends with TARGET_TAIL_BITS zeros
 __device__ __forceinline__ bool ends_with_target_zeros(unsigned long long value_low)
@@ -55,7 +54,7 @@ __device__ __forceinline__ bool ends_with_target_zeros(unsigned long long value_
 }
 
 // Helper function to initialize 135-bit value from a binary string
-__host__ void initialize_135_bit_value(const char *binary_str, unsigned long long &high, unsigned long long &mid, unsigned long long &low)
+__host__ void initialize_135_bit_value(const char *binary_str, unsigned char &high, unsigned long long &mid, unsigned long long &low)
 {
     high = 0;
     mid = 0;
@@ -66,7 +65,7 @@ __host__ void initialize_135_bit_value(const char *binary_str, unsigned long lon
     {
         if (binary_str[i] == '1')
         {
-            if (i < 7) high |= (1ULL << (6 - i));
+            if (i < 7) high |= (1 << (6 - i));
             else if (i < 71) mid |= (1ULL << (70 - i));
             else if (i < 135) low |= (1ULL << (134 - i));
         }
@@ -81,6 +80,12 @@ __global__ void init_curand_states(curandState *state, unsigned long long seed)
     curand_init(seed, idx, 0, &state[idx]);
 }
 
+// Structure for 128-bit counter
+struct Counter128 {
+    unsigned long long low;
+    unsigned long long high;
+};
+
 // Device function to atomically add to a 128-bit counter
 __device__ void atomicAdd128(Counter128 *counter, unsigned long long value)
 {
@@ -91,10 +96,203 @@ __device__ void atomicAdd128(Counter128 *counter, unsigned long long value)
     }
 }
 
+// Structure to define step thresholds
+struct StepThreshold {
+    unsigned long long high;
+    unsigned long long low;
+    unsigned int exponent; // For printing purposes, e.g., 60 for 2^60
+    bool printed;
+};
+
+// Custom hash function for Point
+struct PointHash {
+    std::size_t operator()(const Point& p) const {
+        return std::hash<unsigned long long>()(p.mid) ^ 
+               std::hash<unsigned long long>()(p.low);
+    }
+};
+
+// Custom equality function for Point
+struct PointEqual {
+    bool operator()(const Point& a, const Point& b) const {
+        return (a.mid == b.mid) && (a.low == b.low);
+    }
+};
+
+// Thread-safe queue for compression
+template <typename T>
+class ThreadSafeQueue {
+private:
+    std::queue<T> queue_;
+    std::mutex mutex_;
+    std::condition_variable cond_var_;
+public:
+    void enqueue(T item) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            queue_.push(std::move(item));
+        }
+        cond_var_.notify_one();
+    }
+
+    bool dequeue(T& item) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (queue_.empty()) {
+            cond_var_.wait(lock);
+        }
+        if (!queue_.empty()) {
+            item = std::move(queue_.front());
+            queue_.pop();
+            return true;
+        }
+        return false;
+    }
+
+    // To allow graceful shutdown
+    bool try_dequeue(T& item) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!queue_.empty()) {
+            item = std::move(queue_.front());
+            queue_.pop();
+            return true;
+        }
+        return false;
+    }
+};
+
+// Function to detect collisions by aggregating points from all GPUs
+void detect_collisions(const std::vector<std::string>& filenames)
+{
+    // Create an unordered_set with custom hash and equality functions
+    std::unordered_set<Point, PointHash, PointEqual> point_set;
+
+    // To keep track of collisions
+    std::vector<Point> collisions;
+
+    // Compression buffers
+    std::vector<char> compressed_buffer;
+    std::vector<char> decompressed_buffer;
+
+    for (const auto& filename : filenames) {
+        std::ifstream dp_file(filename, std::ios::binary | std::ios::in);
+        if (!dp_file.is_open()) {
+            fprintf(stderr, "Failed to open file %s for reading.\n", filename.c_str());
+            continue;
+        }
+
+        while (dp_file.peek() != EOF) {
+            // Read the size of the compressed block
+            int compressed_size;
+            dp_file.read(reinterpret_cast<char*>(&compressed_size), sizeof(int));
+            if (dp_file.eof()) break;
+            if (compressed_size <= 0) {
+                fprintf(stderr, "Invalid compressed size in file %s.\n", filename.c_str());
+                break;
+            }
+
+            // Read the compressed data
+            compressed_buffer.resize(compressed_size);
+            dp_file.read(compressed_buffer.data(), compressed_size);
+            if (dp_file.eof() || dp_file.fail()) {
+                fprintf(stderr, "Failed to read compressed data from file %s.\n", filename.c_str());
+                break;
+            }
+
+            // Estimate decompressed size (assuming it's BUFFER_SIZE * sizeof(Point))
+            size_t decompressed_size = BUFFER_SIZE * sizeof(Point);
+            decompressed_buffer.resize(decompressed_size);
+
+            // Decompress the data
+            int actual_decompressed_size = LZ4_decompress_safe(
+                compressed_buffer.data(),
+                decompressed_buffer.data(),
+                compressed_size,
+                decompressed_size
+            );
+
+            if (actual_decompressed_size < 0) {
+                fprintf(stderr, "Decompression failed for a block in file %s.\n", filename.c_str());
+                break;
+            }
+
+            // Number of Points in the decompressed data
+            size_t num_points = actual_decompressed_size / sizeof(Point);
+            Point* points = reinterpret_cast<Point*>(decompressed_buffer.data());
+
+            for (size_t i = 0; i < num_points; ++i) {
+                auto result = point_set.insert(points[i]);
+                if (!result.second) { // Duplicate found
+                    collisions.push_back(points[i]);
+                }
+            }
+        }
+
+        dp_file.close();
+    }
+
+    // Print collision information
+    if (!collisions.empty()) {
+        printf("Collisions detected:\n");
+        for (const auto& p : collisions) {
+            printf("Collision at Point: mid=%llu, low=%llu\n", p.mid, p.low);
+        }
+    }
+    else {
+        printf("No collisions detected.\n");
+    }
+}
+
+// Step monitor function
+void step_monitor(Counter128 *global_counter, std::vector<StepThreshold> &thresholds)
+{
+    bool all_printed = false;
+    while (!all_printed)
+    {
+        // Read the current total steps
+        unsigned long long high = global_counter->high;
+        unsigned long long low = global_counter->low;
+
+        // Iterate through thresholds
+        for (auto &threshold : thresholds)
+        {
+            if (!threshold.printed)
+            {
+                if ( (high > threshold.high) || 
+                     (high == threshold.high && low >= threshold.low) )
+                {
+                    // Print the threshold reached
+                    printf("Total steps reached 2^%u.\n", threshold.exponent);
+                    threshold.printed = true;
+                }
+            }
+        }
+
+        // Check if all thresholds have been printed
+        all_printed = true;
+        for (const auto &threshold : thresholds)
+        {
+            if (!threshold.printed)
+            {
+                all_printed = false;
+                break;
+            }
+        }
+
+        // Sleep for a short duration to avoid busy waiting
+        sleep(1);
+    }
+}
+
+// Compression task structure
+struct CompressionTask {
+    std::vector<Point> buffer;
+    std::string filename;
+};
+
 // Kernel to generate paths and collect distinguished points
 __global__ void generate_paths(
     curandState *state,
-    unsigned long long tame_high,
+    unsigned char tame_high,
     unsigned long long tame_mid,
     unsigned long long tame_low,
     Counter128 *global_counter,
@@ -108,7 +306,7 @@ __global__ void generate_paths(
     curandState localState = state[idx];
 
     // Initialize local tame and wild variables
-    unsigned long long local_tame_high = tame_high;
+    unsigned char local_tame_high = tame_high;
     unsigned long long local_tame_mid = tame_mid;
     unsigned long long local_tame_low = tame_low;
 
@@ -129,7 +327,7 @@ __global__ void generate_paths(
         if (new_tame_low < local_tame_low) // Handle overflow
         {
             local_tame_mid++;
-            if (local_tame_mid == 0) local_tame_high = (local_tame_high + 1) & 0x7FULL;
+            if (local_tame_mid == 0) local_tame_high = (local_tame_high + 1) & 0x7F; // 7 bits
         }
         local_tame_low = new_tame_low;
         steps_tame++;
@@ -145,8 +343,6 @@ __global__ void generate_paths(
                 dp_points[dp_idx].low = local_tame_low;
                 dp_points[dp_idx].steps = steps_tame;
                 dp_points[dp_idx].is_tame = 1;
-                // Set padding to 0
-                for(int p=0; p<7; p++) dp_points[dp_idx].padding[p] = 0;
             }
             else {
                 // Reached max_dp, exit early
@@ -160,7 +356,7 @@ __global__ void generate_paths(
         if (new_wild_low < local_wild_low) // Handle overflow
         {
             local_wild_mid++;
-            if (local_wild_mid == 0) local_wild_high = (local_wild_high + 1) & 0x7FULL;
+            if (local_wild_mid == 0) local_wild_high = (local_wild_high + 1) & 0x7F; // 7 bits
         }
         local_wild_low = new_wild_low;
         steps_wild++;
@@ -176,8 +372,6 @@ __global__ void generate_paths(
                 dp_points[dp_idx].low = local_wild_low;
                 dp_points[dp_idx].steps = steps_wild;
                 dp_points[dp_idx].is_tame = 0;
-                // Set padding to 0
-                for(int p=0; p<7; p++) dp_points[dp_idx].padding[p] = 0;
             }
             else {
                 // Reached max_dp, exit early
@@ -204,7 +398,8 @@ void run_on_device(
     int device_id,
     const char* initial_value,
     unsigned long long seed_offset,
-    Counter128 *global_counter
+    Counter128 *global_counter,
+    ThreadSafeQueue<CompressionTask> &compression_queue
 )
 {
     cudaError_t err;
@@ -263,7 +458,8 @@ void run_on_device(
     }
 
     // Initialize the 135-bit tame value
-    unsigned long long tame_high, tame_mid, tame_low;
+    unsigned char tame_high;
+    unsigned long long tame_mid, tame_low;
     initialize_135_bit_value(initial_value, tame_high, tame_mid, tame_low);
 
     // Initialize curand states with unique seed per GPU
@@ -295,20 +491,11 @@ void run_on_device(
     dim3 grid(BLOCKS_PER_GPU);
     dim3 block(THREADS_PER_BLOCK);
 
-    // Open a binary file for writing distinguished points
+    // Prepare filename
     char filename[256];
     snprintf(filename, sizeof(filename), "dp_device_%d.bin", device_id);
-    std::ofstream dp_file(filename, std::ios::binary | std::ios::out);
-    if (!dp_file.is_open()) {
-        fprintf(stderr, "GPU %d: Failed to open file %s for writing.\n", device_id, filename);
-        cudaFree(d_state);
-        cudaFree(d_dp_points);
-        cudaFree(d_dp_count);
-        cudaFreeHost(h_dp_points);
-        return;
-    }
 
-    // Buffer to hold Points before writing to disk
+    // Initialize compression task buffer
     std::vector<Point> buffer;
     buffer.reserve(BUFFER_SIZE);
 
@@ -372,19 +559,13 @@ void run_on_device(
             for (unsigned int i = 0; i < dp_count_host; ++i) {
                 buffer.push_back(h_dp_points[i]);
                 if (buffer.size() >= BUFFER_SIZE) {
-                    // Write buffer to disk
-                    dp_file.write(reinterpret_cast<char*>(buffer.data()), buffer.size() * sizeof(Point));
-                    if (!dp_file) {
-                        fprintf(stderr, "GPU %d: Failed to write to file %s.\n", device_id, filename);
-                        break;
-                    }
-                    buffer.clear();
+                    // Create a compression task
+                    CompressionTask task;
+                    task.buffer = std::move(buffer);
+                    task.filename = filename;
+                    compression_queue.enqueue(std::move(task));
+                    buffer.reserve(BUFFER_SIZE); // Reserve again for the next buffer
                 }
-            }
-
-            // Optionally flush the buffer periodically
-            if (buffer.size() >= BUFFER_SIZE) {
-                dp_file.flush();
             }
         }
 
@@ -393,17 +574,13 @@ void run_on_device(
         // For demonstration, we'll run indefinitely. You can add a condition to break the loop.
     }
 
-    // Write any remaining buffered points to disk
+    // Enqueue any remaining buffered points as a final task
     if (!buffer.empty()) {
-        dp_file.write(reinterpret_cast<char*>(buffer.data()), buffer.size() * sizeof(Point));
-        if (!dp_file) {
-            fprintf(stderr, "GPU %d: Failed to write remaining buffer to file %s.\n", device_id, filename);
-        }
-        buffer.clear();
+        CompressionTask task;
+        task.buffer = std::move(buffer);
+        task.filename = filename;
+        compression_queue.enqueue(std::move(task));
     }
-
-    // Close the file
-    dp_file.close();
 
     // Free allocated memory
     cudaFree(d_state);
@@ -412,106 +589,51 @@ void run_on_device(
     cudaFreeHost(h_dp_points);
 }
 
-// Structure to define step thresholds
-struct StepThreshold {
-    unsigned long long high;
-    unsigned long long low;
-    unsigned int exponent; // For printing purposes, e.g., 60 for 2^60
-    bool printed;
-};
-
-// Step monitor function
-void step_monitor(Counter128 *global_counter, std::vector<StepThreshold> &thresholds)
+// Compression worker function
+void compression_worker(ThreadSafeQueue<CompressionTask> &compression_queue, std::atomic<bool> &done)
 {
-    bool all_printed = false;
-    while (!all_printed)
-    {
-        // Read the current total steps
-        unsigned long long high = global_counter->high;
-        unsigned long long low = global_counter->low;
+    // Initialize compression buffers
+    std::vector<char> compressed_buffer(COMPRESSION_BUFFER_SIZE);
 
-        // Iterate through thresholds
-        for (auto &threshold : thresholds)
-        {
-            if (!threshold.printed)
-            {
-                if ( (high > threshold.high) || 
-                     (high == threshold.high && low >= threshold.low) )
-                {
-                    // Print the threshold reached
-                    printf("Total steps reached 2^%u.\n", threshold.exponent);
-                    threshold.printed = true;
-                }
+    while (!done || !compression_queue.try_dequeue(*(new CompressionTask()))) {
+        CompressionTask task;
+        if (compression_queue.dequeue(task)) {
+            // Compress the buffer
+            int compressed_size = LZ4_compress_default(
+                reinterpret_cast<const char*>(task.buffer.data()),
+                compressed_buffer.data(),
+                task.buffer.size() * sizeof(Point),
+                COMPRESSION_BUFFER_SIZE
+            );
+
+            if (compressed_size <= 0) {
+                fprintf(stderr, "Compression failed.\n");
+                continue;
             }
-        }
 
-        // Check if all thresholds have been printed
-        all_printed = true;
-        for (const auto &threshold : thresholds)
-        {
-            if (!threshold.printed)
-            {
-                all_printed = false;
-                break;
+            // Open the file in append mode
+            std::ofstream dp_file(task.filename, std::ios::binary | std::ios::app);
+            if (!dp_file.is_open()) {
+                fprintf(stderr, "Failed to open file %s for writing.\n", task.filename.c_str());
+                continue;
             }
-        }
 
-        // Sleep for a short duration to avoid busy waiting
-        sleep(1);
-    }
-}
-
-// Custom hash function for Point
-struct PointHash {
-    std::size_t operator()(const Point& p) const {
-        return std::hash<unsigned long long>()(p.high) ^ 
-               std::hash<unsigned long long>()(p.mid) ^ 
-               std::hash<unsigned long long>()(p.low);
-    }
-};
-
-// Custom equality function for Point
-struct PointEqual {
-    bool operator()(const Point& a, const Point& b) const {
-        return (a.high == b.high) && (a.mid == b.mid) && (a.low == b.low);
-    }
-};
-
-// Function to detect collisions by aggregating points from all GPUs
-void detect_collisions(const std::vector<std::string>& filenames)
-{
-    // Create an unordered_set with custom hash and equality functions
-    std::unordered_set<Point, PointHash, PointEqual> point_set;
-
-    // To keep track of collisions
-    std::vector<Point> collisions;
-
-    for (const auto& filename : filenames) {
-        std::ifstream dp_file(filename, std::ios::binary | std::ios::in);
-        if (!dp_file.is_open()) {
-            fprintf(stderr, "Failed to open file %s for reading.\n", filename.c_str());
-            continue;
-        }
-
-        Point p;
-        while (dp_file.read(reinterpret_cast<char*>(&p), sizeof(Point))) {
-            auto result = point_set.insert(p);
-            if (!result.second) { // Duplicate found
-                collisions.push_back(p);
+            // Write the size of the compressed data
+            dp_file.write(reinterpret_cast<char*>(&compressed_size), sizeof(int));
+            if (!dp_file) {
+                fprintf(stderr, "Failed to write compressed size to file %s.\n", task.filename.c_str());
+                dp_file.close();
+                continue;
             }
-        }
-        dp_file.close();
-    }
 
-    // Print collision information
-    if (!collisions.empty()) {
-        printf("Collisions detected:\n");
-        for (const auto& p : collisions) {
-            printf("Collision at Point: high=%llu, mid=%llu, low=%llu\n", p.high, p.mid, p.low);
+            // Write the compressed data
+            dp_file.write(compressed_buffer.data(), compressed_size);
+            if (!dp_file) {
+                fprintf(stderr, "Failed to write compressed data to file %s.\n", task.filename.c_str());
+            }
+
+            dp_file.close();
         }
-    }
-    else {
-        printf("No collisions detected.\n");
     }
 }
 
@@ -553,17 +675,43 @@ int main()
     // Create a thread for step monitoring
     std::thread monitor_thread(step_monitor, global_counter, std::ref(thresholds));
 
+    // Create a thread-safe queue for compression tasks
+    ThreadSafeQueue<CompressionTask> compression_queue;
+
+    // Create compression worker threads (one per CPU core or as needed)
+    unsigned int compression_threads_count = std::thread::hardware_concurrency();
+    if (compression_threads_count == 0) compression_threads_count = 4; // Fallback to 4 threads
+    std::vector<std::thread> compression_workers;
+    std::atomic<bool> compression_done(false);
+    for (unsigned int i = 0; i < compression_threads_count; ++i) {
+        compression_workers.emplace_back(compression_worker, std::ref(compression_queue), std::ref(compression_done));
+    }
+
     // Create threads for each GPU
-    std::vector<std::thread> threads;
+    std::vector<std::thread> device_threads;
     for (int device_id = 0; device_id < device_count; ++device_id)
     {
         // Each GPU gets a unique seed offset to ensure different random sequences
         unsigned long long seed_offset = device_id * 1000;
-        threads.emplace_back(run_on_device, device_id, INITIAL_VALUE, seed_offset, global_counter);
+        device_threads.emplace_back(run_on_device, device_id, INITIAL_VALUE, seed_offset, global_counter, std::ref(compression_queue));
     }
 
     // Wait for all device threads to finish
-    for (auto &t : threads)
+    for (auto &t : device_threads)
+    {
+        t.join();
+    }
+
+    // Signal compression workers to finish
+    compression_done = true;
+    // Notify all waiting compression workers
+    for (unsigned int i = 0; i < compression_threads_count; ++i) {
+        CompressionTask dummy_task;
+        compression_queue.enqueue(std::move(dummy_task));
+    }
+
+    // Wait for all compression workers to finish
+    for (auto &t : compression_workers)
     {
         t.join();
     }
@@ -584,6 +732,8 @@ int main()
 
     // Free the global counter memory
     cudaFree(global_counter);
+
+    // Optionally, you can perform additional processing on the saved files here
 
     return 0;
 }
