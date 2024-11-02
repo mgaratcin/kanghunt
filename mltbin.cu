@@ -599,7 +599,7 @@ void run_on_device(
                         std::lock_guard<std::mutex> lock(print_mutex);
                         if (!printed_10k_dp.load()) { // Double-check within mutex
                             printf("10,000th DP Found:\n");
-                            printf("Binary Format: %s\n", hex_dp.c_str());
+                            printf("Hexadecimal Format: %s\n", hex_dp.c_str());
                             printed_10k_dp.store(true);
                         }
                     }
