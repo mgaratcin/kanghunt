@@ -8,16 +8,20 @@
 #include <mutex>
 #include <atomic>
 #include <unistd.h>
+#include <fstream>
+#include <unordered_set>
+#include <functional>
 
 // Constants and Macros
 #define BINARY_LENGTH 135
 #define INITIAL_VALUE "0100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 #define THREADS_PER_BLOCK 256 // Number of threads per block
 #define BLOCKS_PER_GPU 256    // Number of blocks per GPU
-#define TARGET_TAIL_BITS 35   // Distinguished points with at least 50 trailing zeros
+#define TARGET_TAIL_BITS 35   // Distinguished points with at least 35 trailing zeros
 #define BATCH_SIZE 1000000ULL // Adjusted for initial debugging
 #define SEED 1234 // Base seed for random number generator
 #define MAX_DISTINGUISHED_POINTS_PER_KERNEL 1000000 // Adjusted for initial debugging
+#define BUFFER_SIZE 100000 // Number of Points to buffer before writing to disk
 
 // Structure Definitions
 struct Counter128 {
@@ -32,23 +36,17 @@ struct Point {
     unsigned long long steps;
     unsigned char is_tame; // Changed from bool to unsigned char for alignment
     unsigned char padding[7]; // Padding to make the structure 40 bytes (aligned)
+
+    // Equality operator for unordered_set
+    bool operator==(const Point& other) const {
+        return (high == other.high) &&
+               (mid == other.mid) &&
+               (low == other.low);
+    }
 };
 
 // Static assertion to ensure Point struct size is consistent
 static_assert(sizeof(Point) == 40, "Point struct size must be 40 bytes");
-
-// Host-side container for distinguished points
-struct HostDPSContainer {
-    std::vector<Point> points;
-    std::mutex container_mutex;
-    // Removed target_printed and associated logic
-
-    void append(const std::vector<Point>& new_points, unsigned long long device_id) {
-        std::lock_guard<std::mutex> lock(container_mutex);
-        points.insert(points.end(), new_points.begin(), new_points.end());
-        // Removed the check for TARGET_DP_INDEX and associated print and exit
-    }
-};
 
 // Device function to check if a value ends with TARGET_TAIL_BITS zeros
 __device__ __forceinline__ bool ends_with_target_zeros(unsigned long long value_low)
@@ -201,21 +199,12 @@ __global__ void generate_paths(
     state[idx] = localState;
 }
 
-// Function to append dps from device to host
-void append_dps_to_host(Point* h_dp_points, unsigned int dp_count_host, HostDPSContainer* host_dps, unsigned long long device_id)
-{
-    if (dp_count_host == 0) return;
-    std::vector<Point> temp(h_dp_points, h_dp_points + dp_count_host);
-    host_dps->append(temp, device_id);
-}
-
 // Function to run on each GPU
 void run_on_device(
     int device_id,
     const char* initial_value,
     unsigned long long seed_offset,
-    Counter128 *global_counter,
-    HostDPSContainer* host_dps
+    Counter128 *global_counter
 )
 {
     cudaError_t err;
@@ -306,6 +295,23 @@ void run_on_device(
     dim3 grid(BLOCKS_PER_GPU);
     dim3 block(THREADS_PER_BLOCK);
 
+    // Open a binary file for writing distinguished points
+    char filename[256];
+    snprintf(filename, sizeof(filename), "dp_device_%d.bin", device_id);
+    std::ofstream dp_file(filename, std::ios::binary | std::ios::out);
+    if (!dp_file.is_open()) {
+        fprintf(stderr, "GPU %d: Failed to open file %s for writing.\n", device_id, filename);
+        cudaFree(d_state);
+        cudaFree(d_dp_points);
+        cudaFree(d_dp_count);
+        cudaFreeHost(h_dp_points);
+        return;
+    }
+
+    // Buffer to hold Points before writing to disk
+    std::vector<Point> buffer;
+    buffer.reserve(BUFFER_SIZE);
+
     // Main loop controlled by the host
     while (true)
     {
@@ -362,12 +368,42 @@ void run_on_device(
                 break;
             }
 
-            // Append to the main host container
-            append_dps_to_host(h_dp_points, dp_count_host, host_dps, device_id);
+            // Buffer the points
+            for (unsigned int i = 0; i < dp_count_host; ++i) {
+                buffer.push_back(h_dp_points[i]);
+                if (buffer.size() >= BUFFER_SIZE) {
+                    // Write buffer to disk
+                    dp_file.write(reinterpret_cast<char*>(buffer.data()), buffer.size() * sizeof(Point));
+                    if (!dp_file) {
+                        fprintf(stderr, "GPU %d: Failed to write to file %s.\n", device_id, filename);
+                        break;
+                    }
+                    buffer.clear();
+                }
+            }
+
+            // Optionally flush the buffer periodically
+            if (buffer.size() >= BUFFER_SIZE) {
+                dp_file.flush();
+            }
         }
 
         // Optional: Implement a termination condition here if needed
+        // For example, based on global_counter or a user interrupt
+        // For demonstration, we'll run indefinitely. You can add a condition to break the loop.
     }
+
+    // Write any remaining buffered points to disk
+    if (!buffer.empty()) {
+        dp_file.write(reinterpret_cast<char*>(buffer.data()), buffer.size() * sizeof(Point));
+        if (!dp_file) {
+            fprintf(stderr, "GPU %d: Failed to write remaining buffer to file %s.\n", device_id, filename);
+        }
+        buffer.clear();
+    }
+
+    // Close the file
+    dp_file.close();
 
     // Free allocated memory
     cudaFree(d_state);
@@ -402,12 +438,7 @@ void step_monitor(Counter128 *global_counter, std::vector<StepThreshold> &thresh
                 if ( (high > threshold.high) || 
                      (high == threshold.high && low >= threshold.low) )
                 {
-                    // Calculate the actual step count for printing
-                    // For 2^n, step count is 1ULL << n
-                    // However, to display the total steps, we can compute it as high * 2^64 + low
-                    // Since n can be up to 80, which is less than 128 bits
-
-                    // To display 2^n, we can just print the exponent
+                    // Print the threshold reached
                     printf("Total steps reached 2^%u.\n", threshold.exponent);
                     threshold.printed = true;
                 }
@@ -427,6 +458,60 @@ void step_monitor(Counter128 *global_counter, std::vector<StepThreshold> &thresh
 
         // Sleep for a short duration to avoid busy waiting
         sleep(1);
+    }
+}
+
+// Custom hash function for Point
+struct PointHash {
+    std::size_t operator()(const Point& p) const {
+        return std::hash<unsigned long long>()(p.high) ^ 
+               std::hash<unsigned long long>()(p.mid) ^ 
+               std::hash<unsigned long long>()(p.low);
+    }
+};
+
+// Custom equality function for Point
+struct PointEqual {
+    bool operator()(const Point& a, const Point& b) const {
+        return (a.high == b.high) && (a.mid == b.mid) && (a.low == b.low);
+    }
+};
+
+// Function to detect collisions by aggregating points from all GPUs
+void detect_collisions(const std::vector<std::string>& filenames)
+{
+    // Create an unordered_set with custom hash and equality functions
+    std::unordered_set<Point, PointHash, PointEqual> point_set;
+
+    // To keep track of collisions
+    std::vector<Point> collisions;
+
+    for (const auto& filename : filenames) {
+        std::ifstream dp_file(filename, std::ios::binary | std::ios::in);
+        if (!dp_file.is_open()) {
+            fprintf(stderr, "Failed to open file %s for reading.\n", filename.c_str());
+            continue;
+        }
+
+        Point p;
+        while (dp_file.read(reinterpret_cast<char*>(&p), sizeof(Point))) {
+            auto result = point_set.insert(p);
+            if (!result.second) { // Duplicate found
+                collisions.push_back(p);
+            }
+        }
+        dp_file.close();
+    }
+
+    // Print collision information
+    if (!collisions.empty()) {
+        printf("Collisions detected:\n");
+        for (const auto& p : collisions) {
+            printf("Collision at Point: high=%llu, mid=%llu, low=%llu\n", p.high, p.mid, p.low);
+        }
+    }
+    else {
+        printf("No collisions detected.\n");
     }
 }
 
@@ -456,9 +541,6 @@ int main()
     global_counter->low = 0;
     global_counter->high = 0;
 
-    // Initialize the host container for dps
-    HostDPSContainer host_dps;
-
     // Define the step thresholds
     std::vector<StepThreshold> thresholds = {
         {0, 1ULL << 60, 60, false},   // 2^60
@@ -477,7 +559,7 @@ int main()
     {
         // Each GPU gets a unique seed offset to ensure different random sequences
         unsigned long long seed_offset = device_id * 1000;
-        threads.emplace_back(run_on_device, device_id, INITIAL_VALUE, seed_offset, global_counter, &host_dps);
+        threads.emplace_back(run_on_device, device_id, INITIAL_VALUE, seed_offset, global_counter);
     }
 
     // Wait for all device threads to finish
@@ -489,19 +571,19 @@ int main()
     // Wait for the monitor thread to finish
     monitor_thread.join();
 
+    // Collect all filenames
+    std::vector<std::string> filenames;
+    for (int device_id = 0; device_id < device_count; ++device_id) {
+        char filename[256];
+        snprintf(filename, sizeof(filename), "dp_device_%d.bin", device_id);
+        filenames.emplace_back(filename);
+    }
+
+    // Detect collisions
+    detect_collisions(filenames);
+
     // Free the global counter memory
     cudaFree(global_counter);
-
-    // Optionally, process or save the accumulated distinguished points here
-    /*
-    FILE *fp = fopen("distinguished_points.bin", "wb");
-    if (fp) {
-        fwrite(host_dps.points.data(), sizeof(Point), host_dps.points.size(), fp);
-        fclose(fp);
-    } else {
-        fprintf(stderr, "Failed to open file for writing distinguished points.\n");
-    }
-    */
 
     return 0;
 }
