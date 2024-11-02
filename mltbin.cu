@@ -24,7 +24,7 @@
 #define INITIAL_VALUE "1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" // Corrected to start with '1' followed by '0's
 #define THREADS_PER_BLOCK 256 // Number of threads per block
 #define BLOCKS_PER_GPU 256    // Number of blocks per GPU
-#define TARGET_TAIL_BITS 25   // Distinguished points with at least 35 trailing zeros
+#define TARGET_TAIL_BITS 45   // Distinguished points with at least 35 trailing zeros
 #define BATCH_SIZE 1000000ULL // Number of iterations per kernel launch
 #define SEED 1234 // Base seed for random number generator
 #define MAX_DISTINGUISHED_POINTS_PER_KERNEL 1000000 // Maximum DPs per kernel
@@ -330,7 +330,7 @@ __global__ void generate_paths(
     unsigned long long steps_wild = 0;
 
     // Using a larger increment for tame_low to speed up tame path updates
-    const unsigned long long tame_increment = 65536;
+    const unsigned long long tame_increment = 262144;
 
     for (unsigned long long batch = 0; batch < batch_size; ++batch)
     {
