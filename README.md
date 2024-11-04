@@ -11,6 +11,7 @@ apt install git -y
 apt install build-essential -y
 apt install libssl-dev -y
 apt install libgmp-dev -y
+sudo apt install liblz4-dev -y
 wget https://github.com/Kitware/CMake/releases/download/v3.27.0/cmake-3.27.0.tar.gz
 tar -zxvf cmake-3.27.0.tar.gz
 cd cmake-3.27.0
