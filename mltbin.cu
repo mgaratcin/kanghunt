@@ -22,10 +22,10 @@
 // Constants and Macros
 #define BINARY_LENGTH 135
 #define INITIAL_VALUE "1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" // Corrected to start with '1' followed by '0's
-#define THREADS_PER_BLOCK 256 // Number of threads per block
-#define BLOCKS_PER_GPU 256    // Number of blocks per GPU
-#define TARGET_TAIL_BITS 45   // Distinguished points with at least 35 trailing zeros
-#define BATCH_SIZE 1000000ULL // Number of iterations per kernel launch
+#define THREADS_PER_BLOCK 256 // 
+#define BLOCKS_PER_GPU 256    // 
+#define TARGET_TAIL_BITS 25   // 
+#define BATCH_SIZE 1000000ULL // 
 #define SEED 1234 // Base seed for random number generator
 #define MAX_DISTINGUISHED_POINTS_PER_KERNEL 1000000 // Maximum DPs per kernel
 #define BUFFER_SIZE 100000 // Number of Points to buffer before writing to disk
