@@ -1,4 +1,5 @@
-*This program is not functioning yet, or ready for use.*
+*This program is not functioning yet, or ready for use.
+Updates will be provided when it is fully functional.*
 ```  
 nvcc -O3 -o mltbin mltbin.cu -std=c++11 -llz4 -lpthread
 ```
