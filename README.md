@@ -1,6 +1,6 @@
 *This program is not functioning yet, or ready for use.*
 ```  
-nvcc -o mltbin mltbin.cu -std=c++11
+nvcc -O3 -o mltbin mltbin.cu -std=c++11 -llz4 -lpthread
 ```
 On Debian based systems, run this commands to update your current enviroment
 and install the tools needed to compile it 
