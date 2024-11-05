@@ -31,6 +31,9 @@
 #define BUFFER_SIZE 100000 // Number of Points to buffer before writing to disk
 #define COMPRESSION_BUFFER_SIZE (LZ4_compressBound(BUFFER_SIZE * sizeof(struct Point))) // Maximum compressed size
 
+// New Constant for Wild Path Increment
+#define WILD_INCREMENT 262144ULL // Added to increase wild path generation rate
+
 // Structure Definitions
 
 // Packed Point structure to reduce size from 40 to 26 bytes
@@ -123,14 +126,14 @@ struct PointEqual {
 template <typename T>
 class ThreadSafeQueue {
 private:
-    std::queue<T> queue_;
+    std::queue<T> queue_; // Corrected to 'queue_'
     std::mutex mutex_;
     std::condition_variable cond_var_;
 public:
     void enqueue(T item) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            queue_.push(std::move(item));
+            queue_.push(std::move(item)); // Use 'queue_'
         }
         cond_var_.notify_one();
     }
@@ -141,8 +144,8 @@ public:
             cond_var_.wait(lock);
         }
         if (!queue_.empty()) {
-            item = std::move(queue_.front());
-            queue_.pop();
+            item = std::move(queue_.front()); // Use 'queue_'
+            queue_.pop(); // Use 'queue_'
             return true;
         }
         return false;
@@ -152,8 +155,8 @@ public:
     bool try_dequeue(T& item) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!queue_.empty()) {
-            item = std::move(queue_.front());
-            queue_.pop();
+            item = std::move(queue_.front()); // Use 'queue_'
+            queue_.pop(); // Use 'queue_'
             return true;
         }
         return false;
@@ -322,7 +325,7 @@ __global__ void generate_paths(
     unsigned long long local_tame_mid = tame_mid;
     unsigned long long local_tame_low = tame_low;
 
-    unsigned long long local_wild_high = tame_high;
+    unsigned char local_wild_high = tame_high;
     unsigned long long local_wild_mid = tame_mid;
     unsigned long long local_wild_low = tame_low;
 
@@ -331,6 +334,9 @@ __global__ void generate_paths(
 
     // Using a larger increment for tame_low to speed up tame path updates
     const unsigned long long tame_increment = 262144;
+    
+    // Using a larger increment for wild_low to speed up wild path updates
+    const unsigned long long wild_increment = WILD_INCREMENT;
 
     for (unsigned long long batch = 0; batch < batch_size; ++batch)
     {
@@ -362,9 +368,8 @@ __global__ void generate_paths(
             }
         }
 
-        // Increment wild path by a pseudo-random value less than 135 bits
-        unsigned long long random_increment = ((unsigned long long)(curand(&localState) & 0xFFFFFFFFFFFFULL) << 12) | ((unsigned long long)(curand(&localState) & 0xFFFULL));
-        unsigned long long new_wild_low = local_wild_low + random_increment;
+        // Increment wild path by a fixed large value to increase speed
+        unsigned long long new_wild_low = local_wild_low + wild_increment;
         if (new_wild_low < local_wild_low) // Handle overflow
         {
             local_wild_mid++;
@@ -398,7 +403,7 @@ __global__ void generate_paths(
     }
 
     // Update the global 128-bit counter
-    unsigned long long total_steps = steps_tame * tame_increment + steps_wild;
+    unsigned long long total_steps = steps_tame * tame_increment + steps_wild * wild_increment;
     atomicAdd128(global_counter, total_steps);
 
     // Save the updated state
@@ -646,7 +651,7 @@ void compression_worker(ThreadSafeQueue<CompressionTask> &compression_queue, std
     // Initialize compression buffers
     std::vector<char> compressed_buffer(COMPRESSION_BUFFER_SIZE);
 
-    while (!done || !compression_queue.try_dequeue(*(new CompressionTask()))) {
+    while (!done) {
         CompressionTask task;
         if (compression_queue.dequeue(task)) {
             // Compress the buffer
@@ -686,7 +691,12 @@ void compression_worker(ThreadSafeQueue<CompressionTask> &compression_queue, std
             dp_file.close();
         }
     }
+
+    // Handle any remaining tasks if necessary
 }
+
+// Function to detect collisions by aggregating points from all GPUs
+// (Note: This function is already defined above. Ensure it's only defined once.)
 
 int main()
 {
@@ -714,14 +724,46 @@ int main()
     global_counter->low = 0;
     global_counter->high = 0;
 
-    // Define the step thresholds
-    std::vector<StepThreshold> thresholds = {
-        {0, 1ULL << 60, 60, false},   // 2^60
-        {1ULL << 1, 0, 65, false},    // 2^65
-        {1ULL << 6, 0, 70, false},    // 2^70
-        {1ULL << 11, 0, 75, false},   // 2^75
-        {1ULL << 16, 0, 80, false}    // 2^80
-    };
+    // Define the step thresholds dynamically from 2^60 to 2^127
+    std::vector<StepThreshold> thresholds;
+
+    // Starting exponent
+    unsigned int start_exponent = 60;
+    // Maximum exponent (adjust as needed, up to 127 for 128-bit counter)
+    unsigned int max_exponent = 127;
+
+    for (unsigned int exponent = start_exponent; exponent <= max_exponent; ++exponent)
+    {
+        StepThreshold threshold;
+        threshold.exponent = exponent;
+        threshold.printed = false;
+
+        if (exponent < 64)
+        {
+            threshold.high = 0;
+            threshold.low = 1ULL << exponent;
+        }
+        else
+        {
+            // For exponents >= 64, set the high part accordingly
+            // Handle exponents up to 127 to prevent overflow
+            if (exponent - 64 < 64)
+            {
+                threshold.high = 1ULL << (exponent - 64);
+                threshold.low = 0;
+            }
+            else
+            {
+                // For exponents >= 128, handle overflow or extend the counter
+                threshold.high = 0;
+                threshold.low = 0;
+                fprintf(stderr, "Exponent %u is too large to represent in 128 bits.\n", exponent);
+                continue;
+            }
+        }
+
+        thresholds.push_back(threshold);
+    }
 
     // Create a thread for step monitoring
     std::thread monitor_thread(step_monitor, global_counter, std::ref(thresholds));
