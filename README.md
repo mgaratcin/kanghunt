@@ -10,8 +10,6 @@ and install the tools needed to compile it
 ```
 apt install libssl-dev -y
 apt install libgmp-dev -y
-```
-
 git clone https://github.com/bitcoin-core/secp256k1.git
 cd secp256k1
 sudo apt-get update
@@ -22,3 +20,4 @@ make
 sudo make install
 sudo ldconfig
 ls /usr/local/include/secp256k1_ecdh.h
+```
