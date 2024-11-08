@@ -11,3 +11,14 @@ and install the tools needed to compile it
 apt install libssl-dev -y
 apt install libgmp-dev -y
 ```
+
+git clone https://github.com/bitcoin-core/secp256k1.git
+cd secp256k1
+sudo apt-get update
+sudo apt-get install autoconf libtool pkg-config build-essential libgmp-dev
+./autogen.sh
+./configure --enable-module-recovery --enable-module-ecdh
+make
+sudo make install
+sudo ldconfig
+ls /usr/local/include/secp256k1_ecdh.h
