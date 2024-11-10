@@ -11,7 +11,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include "secp256k1.cuh"
-#include "ptx.h"
+#include "ptx.cuh"
 
 // Converts a hexadecimal string to a byte array
 bool hexToBytes(const std::string& hex, unsigned char* bytes, size_t length) {
