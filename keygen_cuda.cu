@@ -50,34 +50,6 @@ size_t computeTotalKeys(const unsigned char* startKey, const unsigned char* endK
     return total;
 }
 
-// Kernel function to compute public keys from private keys
-__global__ void computePublicKeys(unsigned int* privKeys, unsigned int* pubKeysX, unsigned int* pubKeysY, size_t numKeys) {
-    int idx = blockDim.x * blockIdx.x + threadIdx.x;
-
-    if (idx < numKeys) {
-        // Load the private key
-        unsigned int privKey[8];
-        for (int i = 0; i < 8; ++i) {
-            privKey[i] = privKeys[idx + i * numKeys];
-        }
-
-        // Initialize the point (G)
-        unsigned int x[8], y[8];
-        copyBigInt(_GX, x);
-        copyBigInt(_GY, y);
-
-        // Compute public key: [privKey] * G
-        // Implement scalar multiplication
-        pointMultiply(privKey, x, y);
-
-        // Store the public key
-        for (int i = 0; i < 8; ++i) {
-            pubKeysX[idx + i * numKeys] = x[i];
-            pubKeysY[idx + i * numKeys] = y[i];
-        }
-    }
-}
-
 // Implement scalar multiplication
 __device__ void pointMultiply(const unsigned int scalar[8], unsigned int x[8], unsigned int y[8]) {
     // Implement scalar multiplication using the double-and-add algorithm
@@ -311,6 +283,34 @@ __device__ void jacobianToAffine(const unsigned int X[8], const unsigned int Y[8
 
     // y = Y * Zinv3 mod p
     mulModP(Y, Zinv3, y);
+}
+
+// Kernel function to compute public keys from private keys
+__global__ void computePublicKeys(unsigned int* privKeys, unsigned int* pubKeysX, unsigned int* pubKeysY, size_t numKeys) {
+    int idx = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (idx < numKeys) {
+        // Load the private key
+        unsigned int privKey[8];
+        for (int i = 0; i < 8; ++i) {
+            privKey[i] = privKeys[idx + i * numKeys];
+        }
+
+        // Initialize the point (G)
+        unsigned int x[8], y[8];
+        copyBigInt(_GX, x);
+        copyBigInt(_GY, y);
+
+        // Compute public key: [privKey] * G
+        // Implement scalar multiplication
+        pointMultiply(privKey, x, y);
+
+        // Store the public key
+        for (int i = 0; i < 8; ++i) {
+            pubKeysX[idx + i * numKeys] = x[i];
+            pubKeysY[idx + i * numKeys] = y[i];
+        }
+    }
 }
 
 int main(int argc, char* argv[]) {
