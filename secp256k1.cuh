@@ -793,7 +793,9 @@ __device__ static void completeBatchAdd(const unsigned int *px, const unsigned i
 	subModP(newY, py, newY);
 }
 
-
+__device__ static void doubleModP(const unsigned int a[8], unsigned int result[8]) {
+    addModP(a, a, result);
+}
 __device__ __forceinline__ static void doBatchInverse(unsigned int inverse[8])
 {
 	invModP(inverse);
