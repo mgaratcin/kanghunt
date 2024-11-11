@@ -1,4 +1,4 @@
-#ifndef _U64_CUH
+#ifndef _U64_CUH 
 #define _U64_CUH
 
 typedef unsigned long long u64;
