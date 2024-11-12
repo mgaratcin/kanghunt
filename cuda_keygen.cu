@@ -2,12 +2,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <time.h> // Add time.h for timing
 #include "point.cuh"
 #include "ecc.cuh"
 #include "u64.cuh"
 
-#define BATCH_SIZE 65536
-#define NUM_STREAMS 256
+#define BATCH_SIZE 2048
+#define NUM_STREAMS 192
 
 // Function to convert a hexadecimal private key to u64 array
 void hexToPrivateKey(const char* hex, u64 privateKey[4]) {
@@ -97,6 +98,9 @@ int main(int argc, char* argv[]) {
         cudaStreamCreate(&streams[i]);
     }
 
+    int keyCount = 0; // Count the total keys processed
+    clock_t startTime = clock(); // Start the timer
+
     while (isLessOrEqual(currentKey, endKey)) {
         // Split batches across streams
         for (int s = 0; s < NUM_STREAMS; ++s) {
@@ -110,6 +114,7 @@ int main(int argc, char* argv[]) {
                     h_batchKeys[streamBatchSize * 4 + i + offset] = currentKey[i];
                 }
                 streamBatchSize++;
+                keyCount++; // Increment key count
 
                 if (!incrementPrivateKey(currentKey)) break;
             }
@@ -135,21 +140,13 @@ int main(int argc, char* argv[]) {
         for (int i = 0; i < NUM_STREAMS; ++i) {
             cudaStreamSynchronize(streams[i]);
         }
-
-        // Output the results
-        for (int s = 0; s < NUM_STREAMS; ++s) {
-            for (int i = 0; i < BATCH_SIZE; ++i) {
-                char privateKeyHex[65];
-                privateKeyToHex(&h_batchKeys[i * 4 + s * BATCH_SIZE * 4], privateKeyHex);
-                printf("Private Key: %s\n", privateKeyHex);
-                printf("Public Key:\n");
-                for (int j = 0; j < 4; ++j) printf("%016llx", h_batchPublicKeys[i + s * BATCH_SIZE].x[3 - j]);
-                printf(":");
-                for (int j = 0; j < 4; ++j) printf("%016llx", h_batchPublicKeys[i + s * BATCH_SIZE].y[3 - j]);
-                printf("\n\n");
-            }
-        }
     }
+
+    clock_t endTime = clock(); // End the timer
+    double timeTaken = (double)(endTime - startTime) / CLOCKS_PER_SEC; // Time in seconds
+    double keysPerSecond = keyCount / timeTaken; // Calculate keys per second
+
+    printf("Processed %d keys in %.2f seconds (%.2f keys/s)\n", keyCount, timeTaken, keysPerSecond);
 
     // Clean up streams
     for (int i = 0; i < NUM_STREAMS; ++i) {
