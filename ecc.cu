@@ -41,7 +41,7 @@ void getPublicKeyByPrivateKey(Point output[], const u64 flattenedPrivateKeys[][4
     const int GRID_SIZE = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
     // Define the number of streams to use (adjust based on your GPU's capabilities)
-    const int NUM_STREAMS = 4;
+    const int NUM_STREAMS = 256;
 
     // Allocate pinned host memory for input and output
     Point *pinnedPoints;
