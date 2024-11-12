@@ -6,8 +6,8 @@
 #include "ecc.cuh"
 #include "u64.cuh"
 
-#define BATCH_SIZE 2048
-#define NUM_STREAMS 192
+#define BATCH_SIZE 65536
+#define NUM_STREAMS 256
 
 // Function to convert a hexadecimal private key to u64 array
 void hexToPrivateKey(const char* hex, u64 privateKey[4]) {
