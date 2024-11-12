@@ -6,8 +6,8 @@
 #include "ecc.cuh"
 #include "u64.cuh"
 
-#define BATCH_SIZE 1024
-#define NUM_STREAMS 128
+#define BATCH_SIZE 2048
+#define NUM_STREAMS 256
 
 // Function to convert a hexadecimal private key to u64 array
 void hexToPrivateKey(const char* hex, u64 privateKey[4]) {
@@ -119,7 +119,7 @@ int main(int argc, char* argv[]) {
                             sizeof(u64) * 4 * streamBatchSize, cudaMemcpyHostToDevice, streams[s]);
 
             // Define grid and block sizes
-            int threadsPerBlock = 256;
+            int threadsPerBlock = 1024;
             int blocks = (streamBatchSize + threadsPerBlock - 1) / threadsPerBlock;
 
             // Launch the kernel on each stream
