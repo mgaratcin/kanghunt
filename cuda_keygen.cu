@@ -7,7 +7,7 @@
 #include "ecc.cuh"
 #include "u64.cuh"
 
-#define BATCH_SIZE 2048
+#define BATCH_SIZE 1024
 #define NUM_STREAMS 192
 
 // Function to convert a hexadecimal private key to u64 array
